@@ -79,12 +79,12 @@ def _build_report_label(payload, pk_names):
 @import_export_bp.route('/full_raw_import_report/<report_name>')
 @login_required
 def full_raw_import_report(report_name):
-    if current_user.role not in ['admin', 'root']:
+    if not current_app.config.get('LOGIN_DISABLED') and getattr(current_user, 'role', None) not in ['admin', 'root']:
         return "Forbidden", 403
     safe_name = os.path.basename(report_name or '')
     if not safe_name.endswith('.csv') or safe_name != report_name:
         return "Invalid report", 400
-    report_dir = os.path.join(current_app.instance_path, 'import_reports')
+    report_dir = _get_full_raw_report_dir()
     report_path = os.path.join(report_dir, safe_name)
     if not os.path.exists(report_path):
         return "Report not found", 404
@@ -92,7 +92,7 @@ def full_raw_import_report(report_name):
 
 
 def _get_full_raw_report_dir():
-    return os.path.join(current_app.instance_path, 'import_reports')
+    return current_app.config.get('IMPORT_REPORTS_DIR') or os.path.join(current_app.instance_path, 'import_reports')
 
 
 def _list_full_raw_reports():
@@ -127,8 +127,12 @@ def _list_full_raw_reports():
             'scope': (meta or {}).get('scope'),
             'mode': (meta or {}).get('mode'),
             'tenant_name': (meta or {}).get('tenant_name'),
+            'status': (meta or {}).get('status'),
             'inserted': (meta or {}).get('inserted'),
+            'updated': (meta or {}).get('updated'),
             'skipped': (meta or {}).get('skipped'),
+            'failed': (meta or {}).get('failed'),
+            'warnings': (meta or {}).get('warnings'),
             'tables': (meta or {}).get('tables'),
             'source_file': (meta or {}).get('source_file'),
         })

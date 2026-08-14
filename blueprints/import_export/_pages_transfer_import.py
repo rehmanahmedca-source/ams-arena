@@ -13,11 +13,14 @@ def _wants_import_json():
 def _import_result_payload(ok, headline, report, extra=None):
     payload = {
         'ok': bool(ok),
+        'status': (report or {}).get('status') or ('ok' if ok else 'failed'),
         'headline': headline,
         'inserted': (report or {}).get('inserted') or (report or {}).get('imported') or 0,
         'updated': (report or {}).get('updated') or 0,
         'skipped': (report or {}).get('skipped') or 0,
-        'errors': (report or {}).get('errors') or 0,
+        'failed': (report or {}).get('failed') or (report or {}).get('errors') or 0,
+        'errors': (report or {}).get('errors') or (report or {}).get('failed') or 0,
+        'warnings': (report or {}).get('warnings') or 0,
         'tables': (report or {}).get('tables'),
         'table_results': (report or {}).get('table_results') or [],
         'users': (report or {}).get('users') or [],
@@ -112,17 +115,24 @@ def transfer_import():
                 mode=mode,
                 source_file_name=file.filename,
             )
+            failed = int(report.get('failed') or report.get('errors') or 0)
+            warnings = int(report.get('warnings') or 0)
+            outcome = 'complete with row-level problems' if failed else ('complete with warnings' if warnings else 'complete')
             msg = (
-                f"Literal full import complete ({mode}). Inserted: {report['inserted']}, "
-                f"Skipped: {report['skipped']}, Tables: {report['tables']}"
+                f"Literal full import {outcome} ({mode}). Inserted: {report.get('inserted', 0)}, "
+                f"Updated: {report.get('updated', 0)}, Skipped: {report.get('skipped', 0)}, "
+                f"Failed: {failed}, Warnings: {warnings}, Tables: {report.get('tables', 0)}. "
+                "Valid rows were saved; rejected or unavailable data is listed below."
             )
             if notes:
                 msg = msg + ' ' + ' '.join(notes)
             if _wants_import_json():
-                return jsonify(_import_result_payload(True, msg, report, {'report_name': report_name}))
+                # A partial import is a completed request (HTTP 200) with ok=false,
+                # allowing the UI to show the full per-table diagnostic report.
+                return jsonify(_import_result_payload(failed == 0, msg, report, {'report_name': report_name}))
             for note in notes:
                 flash(note, 'info')
-            flash(msg, 'success')
+            flash(msg, 'warning' if (failed or warnings) else 'success')
             return redirect(url_for('import_export.import_export_page', full_raw_import_report=report_name))
         except Exception as e:
             db.session.rollback()
@@ -163,17 +173,19 @@ def transfer_import():
             actor_username=getattr(current_user, 'username', None),
             progress_cb=None,
         )
+        failed = int(report.get('failed') or report.get('errors') or 0)
         msg = (
-            f"Import complete. Imported: {report.get('imported', 0)}, "
-            f"Updated: {report.get('updated', 0)}, Skipped: {report.get('skipped', 0)}."
+            f"Import {'complete with problems' if failed else 'complete'}. "
+            f"Imported: {report.get('imported', 0)}, Updated: {report.get('updated', 0)}, "
+            f"Skipped: {report.get('skipped', 0)}, Failed: {failed}."
         )
         if notes:
             msg = msg + ' ' + ' '.join(notes)
         if _wants_import_json():
-            return jsonify(_import_result_payload(True, msg, report))
+            return jsonify(_import_result_payload(failed == 0, msg, report))
         for note in notes:
             flash(note, 'info')
-        flash(msg, 'success')
+        flash(msg, 'warning' if failed else 'success')
     except Exception as e:
         db.session.rollback()
         if _wants_import_json():

@@ -89,13 +89,18 @@ def full_raw_import():
             )
         except Exception:
             pass
+        failed = int(report.get('failed') or report.get('errors') or 0)
+        warnings = int(report.get('warnings') or 0)
+        outcome = 'complete with row-level problems' if failed else ('complete with warnings' if warnings else 'complete')
         msg = (
-            f"Full raw import complete ({mode}). Inserted: {report['inserted']}, "
-            f"Skipped: {report['skipped']}, Tables: {report['tables']}"
+            f"Full raw import {outcome} ({mode}). Inserted: {report.get('inserted', 0)}, "
+            f"Updated: {report.get('updated', 0)}, Skipped: {report.get('skipped', 0)}, "
+            f"Failed: {failed}, Warnings: {warnings}, Tables: {report.get('tables', 0)}. "
+            "Valid rows were saved; rejected or unavailable data is listed in the report."
         )
         if _wants_import_json():
-            return jsonify(_import_result_payload(True, msg, report, {'report_name': report_name}))
-        flash(msg, 'success')
+            return jsonify(_import_result_payload(failed == 0, msg, report, {'report_name': report_name}))
+        flash(msg, 'warning' if (failed or warnings) else 'success')
     except Exception as e:
         db.session.rollback()
         msg = f'Full raw import failed: {e}'

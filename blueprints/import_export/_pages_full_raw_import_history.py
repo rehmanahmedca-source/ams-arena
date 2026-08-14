@@ -4,7 +4,7 @@ from ._common import *  # noqa
 @import_export_bp.route('/full_raw_import_history', methods=['GET', 'POST'])
 @login_required
 def full_raw_import_history():
-    if current_user.role not in ['admin', 'root']:
+    if not current_app.config.get('LOGIN_DISABLED') and getattr(current_user, 'role', None) not in ['admin', 'root']:
         return "Forbidden", 403
     if request.method == 'POST':
         action = (request.form.get('action') or '').strip()
@@ -20,6 +20,9 @@ def full_raw_import_history():
                 if os.path.exists(path):
                     try:
                         os.remove(path)
+                        meta_path = path.replace('.csv', '.meta.json')
+                        if os.path.exists(meta_path):
+                            os.remove(meta_path)
                         removed += 1
                     except Exception:
                         pass
@@ -33,6 +36,9 @@ def full_raw_import_history():
                     path = os.path.join(report_dir, name)
                     try:
                         os.remove(path)
+                        meta_path = path.replace('.csv', '.meta.json')
+                        if os.path.exists(meta_path):
+                            os.remove(meta_path)
                         removed += 1
                     except Exception:
                         pass

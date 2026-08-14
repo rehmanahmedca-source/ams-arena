@@ -128,26 +128,24 @@
             font-size: 0.95rem;
         }
 
-        /* Button glow for dark UI */
+        /* Shared buttons use a restrained lift instead of mismatched neon glows. */
         .btn {
-            --glow: rgba(56, 189, 248, 0.28);
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.15), 0 6px 16px rgba(2, 6, 23, 0.55), 0 0 12px var(--glow);
-            transition: box-shadow 0.2s ease, transform 0.2s ease;
+            box-shadow: 0 2px 5px rgba(2, 6, 23, 0.22);
+            transition: box-shadow 0.16s ease, transform 0.16s ease, filter 0.16s ease;
         }
         .btn:hover {
-            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.25), 0 8px 18px rgba(2, 6, 23, 0.6), 0 0 16px var(--glow);
+            box-shadow: 0 5px 12px rgba(2, 6, 23, 0.28);
             transform: translateY(-1px);
         }
         .btn:active {
+            box-shadow: 0 1px 3px rgba(2, 6, 23, 0.2);
             transform: translateY(0);
         }
-        .btn-warning { --glow: rgba(251, 191, 36, 0.35); }
-        .btn-info { --glow: rgba(56, 189, 248, 0.35); }
-        .btn-success { --glow: rgba(34, 197, 94, 0.35); }
-        .btn-danger { --glow: rgba(239, 68, 68, 0.35); }
-        .btn-secondary { --glow: rgba(148, 163, 184, 0.25); }
-        .btn-outline-secondary { --glow: rgba(148, 163, 184, 0.2); }
-        .btn-outline-light { --glow: rgba(248, 250, 252, 0.2); }
+        .btn:focus-visible {
+            outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
+            outline-offset: 2px;
+        }
+        html[data-theme="light"] .btn { box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14); }
 
         /* Contrast hardening for dark UI */
         .btn-outline-light {
@@ -689,6 +687,11 @@ function toggleNavGroup(groupId, btn) {
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') hideLoading();
     });
+    function escapeReportHtml(value) {
+        return String(value == null ? '' : value).replace(/[&<>'"]/g, (ch) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+        })[ch]);
+    }
     function fillJobReport(title, summary, tableRows, people, keepOpen) {
         const wrap = document.getElementById('taskProgressReport');
         const body = document.getElementById('taskProgressReportBody');
@@ -700,18 +703,24 @@ function toggleNavGroup(groupId, btn) {
         const statusBadge = (st) => {
             const s = String(st || 'ok').toLowerCase();
             const cls = s === 'ok' || s === 'exported' ? 'bg-success'
-                : (s === 'failed' ? 'bg-danger' : (s === 'skipped' ? 'bg-secondary' : 'bg-warning text-dark'));
-            return '<span class="badge ' + cls + '">' + s + '</span>';
+                : (s === 'failed' ? 'bg-danger'
+                    : (s === 'skipped' || s === 'unavailable' ? 'bg-secondary' : 'bg-warning text-dark'));
+            return '<span class="badge ' + cls + '">' + escapeReportHtml(s) + '</span>';
         };
         let html = '';
         if (tableRows && tableRows.length) {
+            const orderedRows = tableRows.slice().sort((a, b) => {
+                const rank = (row) => ['failed', 'partial', 'warning', 'unavailable', 'skipped'].includes(String(row.status || '').toLowerCase()) ? 0 : 1;
+                return rank(a) - rank(b);
+            });
+            html += '<div class="small text-white-50 mb-2">Problems and unavailable data are shown first. Successful tables remain listed for verification.</div>';
             html += '<div class="table-responsive"><table class="table table-dark table-sm align-middle mb-0">';
             html += '<thead><tr><th>Table / setting</th><th>Status</th><th>In</th><th>Upd</th><th>Skip</th><th>Fail</th><th>Note</th></tr></thead><tbody>';
-            tableRows.forEach((r) => {
-                html += '<tr><td class="fw-bold">' + (r.name || '') + '</td><td>' + statusBadge(r.status)
-                    + '</td><td>' + (r.inserted || r.rows || 0) + '</td><td>' + (r.updated || 0)
-                    + '</td><td>' + (r.skipped || 0) + '</td><td>' + (r.failed || 0)
-                    + '</td><td class="text-white-50 small">' + (r.error || '') + '</td></tr>';
+            orderedRows.forEach((r) => {
+                html += '<tr><td class="fw-bold">' + escapeReportHtml(r.name || '') + '</td><td>' + statusBadge(r.status)
+                    + '</td><td>' + escapeReportHtml(r.inserted || r.rows || 0) + '</td><td>' + escapeReportHtml(r.updated || 0)
+                    + '</td><td>' + escapeReportHtml(r.skipped || 0) + '</td><td>' + escapeReportHtml(r.failed || 0)
+                    + '</td><td class="text-white-50 small">' + escapeReportHtml(r.error || '') + '</td></tr>';
             });
             html += '</tbody></table></div>';
         } else {
@@ -720,9 +729,9 @@ function toggleNavGroup(groupId, btn) {
         if (people && people.length) {
             html += '<div class="fw-bold text-warning mt-3 mb-1">Users / roles</div><ul class="small mb-0">';
             people.forEach((u) => {
-                html += '<li><span class="text-info">' + (u.username || '') + '</span> — '
-                    + (u.role || '') + ' — ' + (u.action || '')
-                    + (u.error ? ' <span class="text-danger">(' + u.error + ')</span>' : '') + '</li>';
+                html += '<li><span class="text-info">' + escapeReportHtml(u.username || '') + '</span> — '
+                    + escapeReportHtml(u.role || '') + ' — ' + escapeReportHtml(u.action || '')
+                    + (u.error ? ' <span class="text-danger">(' + escapeReportHtml(u.error) + ')</span>' : '') + '</li>';
             });
             html += '</ul>';
         }
@@ -766,11 +775,17 @@ function toggleNavGroup(groupId, btn) {
                 const inserted = (data && data.inserted != null) ? data.inserted : (rep.inserted != null ? rep.inserted : (rep.imported != null ? rep.imported : 0));
                 const updated = (data && data.updated != null) ? data.updated : (rep.updated != null ? rep.updated : 0);
                 const skipped = (data && data.skipped != null) ? data.skipped : (rep.skipped != null ? rep.skipped : 0);
+                const failed = (data && data.failed != null) ? data.failed : (rep.failed != null ? rep.failed : (rep.errors || 0));
+                const warnings = (data && data.warnings != null) ? data.warnings : (rep.warnings || 0);
+                const reportStatus = String((data && data.status) || rep.status || '').toLowerCase();
                 const headline = (data && data.headline)
                     || (data && data.error ? 'Import failed: ' + data.error : '')
-                    || ('Inserted ' + inserted + ', updated ' + updated + ', skipped ' + skipped);
+                    || ('Inserted ' + inserted + ', updated ' + updated + ', skipped ' + skipped + ', failed ' + failed);
+                const hasProblems = !ok || Number(failed) > 0 || ['failed', 'partial'].includes(reportStatus);
+                const hasWarnings = Number(warnings) > 0 || reportStatus === 'warning';
+                setTaskProgress(100, hasProblems ? 'Completed with problems' : (hasWarnings ? 'Completed with warnings' : 'Completed'));
                 fillJobReport(
-                    ok ? 'Import completed — table report' : 'Import finished with problems',
+                    hasProblems ? 'Import finished with problems' : (hasWarnings ? 'Import completed with warnings' : 'Import completed — table report'),
                     headline,
                     rows,
                     people,
