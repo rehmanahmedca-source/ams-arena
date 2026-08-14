@@ -642,10 +642,22 @@ function submitCancelSelection{{ client.id }}() {
 .financial-ledger-table .ledger-actions-cell {
     white-space: nowrap;
 }
+/* The card must stay overflow:visible so the row action dropdowns can escape
+   it. Because nothing clips them, the header/table corners have to be rounded
+   by hand or they poke square out of the card's 15px radius (this is what made
+   the Financial Ledger look "off" next to the Material Ledger card). */
 .financial-ledger-card,
 .financial-ledger-card .card-header,
 .financial-ledger-card .card-body {
     overflow: visible !important;
+}
+.financial-ledger-card > .card-header {
+    border-top-left-radius: 13px;
+    border-top-right-radius: 13px;
+}
+.financial-ledger-card > .ledger-table-wrap {
+    border-bottom-left-radius: 13px;
+    border-bottom-right-radius: 13px;
 }
 .ledger-table-wrap {
     overflow-x: auto !important;
@@ -696,17 +708,56 @@ function submitCancelSelection{{ client.id }}() {
     filter: brightness(1.08);
 }
 
-/* Mobile: readable, full-width ledger instead of a crushed fixed table. */
+/* Mobile: readable, full-width ledger instead of a crushed fixed table.
+   Everything here exists to make the stacked Financial Ledger cards render
+   exactly like the Material Ledger cards below them. */
 @media (max-width: 767.98px) {
+    /* Desktop column sizing must not leak into the stacked card layout. */
+    .financial-ledger-table,
+    .financial-ledger-table .ledger-col-date,
+    .financial-ledger-table .ledger-col-desc,
+    .financial-ledger-table .ledger-col-bill,
+    .financial-ledger-table .ledger-col-actions {
+        width: 100% !important;
+        min-width: 0 !important;
+        table-layout: auto !important;
+    }
+    /* The date is a normal stacked field here, not a squeezed 96px column. */
+    .financial-ledger-table .ledger-date-cell {
+        white-space: normal !important;
+        line-height: 1.4;
+    }
     .financial-ledger-table .ledger-date-cell .ledger-date-main {
         font-size: 0.95rem;
     }
     .financial-ledger-table .ledger-date-cell .ledger-date-sub {
         font-size: 0.82rem;
         margin-top: 2px;
+        opacity: 0.75;
     }
     .financial-ledger-table td {
         font-size: 0.95rem;
+    }
+    /* Amounts were right-aligned for the desktop table; inside a stacked card
+       they must read left-aligned under their label, like the Material Ledger. */
+    .financial-ledger-table td.text-end {
+        text-align: left !important;
+    }
+    /* Kill the desktop end-padding so every field lines up on one left edge. */
+    .financial-ledger-table td.ps-4,
+    .financial-ledger-table td.pe-4 {
+        padding-left: 0.9rem !important;
+        padding-right: 0.9rem !important;
+    }
+    /* Action dropdown: full-width tap target, menu that cannot spill off-screen. */
+    .financial-ledger-table .ledger-actions-cell .dropdown {
+        position: static;
+    }
+    .financial-ledger-table .ledger-actions-cell .dropdown-toggle {
+        min-height: 38px;
+    }
+    .financial-ledger-table .dropdown-menu {
+        max-width: calc(100vw - 32px);
     }
 }
 
