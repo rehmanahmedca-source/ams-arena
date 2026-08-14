@@ -160,22 +160,6 @@ def update_settings():
     settings_obj.company_phone = request.form.get('company_phone', settings_obj.company_phone or '+92331-0000993 | +92340-3872722')
     settings_obj.currency = request.form.get('currency', settings_obj.currency or 'PKR')
     settings_obj.allow_global_negative_stock = 'allow_global_negative_stock' in request.form
-    settings_obj.smtp_host = request.form.get('smtp_host', settings_obj.smtp_host or '').strip()
-    settings_obj.smtp_port = int(request.form.get('smtp_port', settings_obj.smtp_port or 587) or 587)
-    settings_obj.smtp_user = request.form.get('smtp_user', settings_obj.smtp_user or '').strip()
-    smtp_pass = request.form.get('smtp_pass', '').strip().replace(' ', '')
-    if smtp_pass:
-        settings_obj.smtp_pass = smtp_pass
-    elif 'clear_smtp_pass' in request.form:
-        settings_obj.smtp_pass = None
-    settings_obj.smtp_from = request.form.get('smtp_from', settings_obj.smtp_from or '').strip()
-    settings_obj.smtp_use_tls = 'smtp_use_tls' in request.form
-    ams_key = request.form.get('ams_openai_api_key', '').strip()
-    if ams_key:
-        settings_obj.ams_openai_api_key = ams_key
-    elif 'clear_ams_openai_api_key' in request.form:
-        settings_obj.ams_openai_api_key = None
-    settings_obj.notify_daily_time = request.form.get('notify_daily_time', settings_obj.notify_daily_time or '08:00').strip() or '08:00'
 
     db.session.commit()
     flash('Settings updated successfully', 'success')

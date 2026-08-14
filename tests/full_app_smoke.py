@@ -33,7 +33,7 @@ GET_PAGES = [
     "/accounts/kpi/cash_accounts", "/accounts/kpi/client_payments",
     "/accounts/kpi/supplier_payments", "/accounts/kpi/expenditures",
     "/accounts/kpi/receipts", "/accounts/kpi/company_money",
-    "/pay_supplier", "/ams_assistant",
+    "/pay_supplier",
     "/admin/", "/admin/modules", "/admin/api/health", "/admin/api/modules",
     "/system_report", "/void_audit", "/debug/db",
     "/api/notifications/due", "/api/client_next_code", "/api/material_next_code",

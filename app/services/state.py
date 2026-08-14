@@ -1,12 +1,8 @@
 """Process-wide mutable flags (workers, caches)."""
 from __future__ import annotations
 
-NOTIFY_WORKER_STARTED = False
-NOTIFY_LAST_SENT_DATE = None
 HOURLY_BACKUP_WORKER_STARTED = False
 HOURLY_BACKUP_LAST_SLOT = None
 RECON_WORKER_STARTED = False
-AMS_ASSISTANT_EXPORT_CACHE = {}
-AMS_ASSISTANT_CONTEXT_CACHE = {}
 RESET_CONTEXT = None
 WEASYPRINT_MODULE = None

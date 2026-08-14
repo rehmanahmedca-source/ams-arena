@@ -89,11 +89,6 @@ def email_file():
         flash('Invalid email request.', 'warning')
         return redirect(url_for('import_export.import_export_page'))
 
-    ok, msg = _smtp_send_attachments(
-        subject=f"Import/Export File - {filename}",
-        body=f"Attached file from Import/Export Center: {filename}",
-        attachments=[(filename, mime, content)]
-    )
-    flash(msg, 'success' if ok else 'warning')
+    flash('Email delivery has been removed from this build. Use Download instead.', 'warning')
     return redirect(url_for('import_export.import_export_page'))
 
