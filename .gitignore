@@ -12,6 +12,8 @@ instance/ahmed_cement.db
 instance/ahmed_cement.db-journal
 instance/secret_key
 instance/import_uploads/
+instance/import_reports/
+instance/health_snapshot.json
 instance/root_hourly_backups/
 
 # Workspace artifacts

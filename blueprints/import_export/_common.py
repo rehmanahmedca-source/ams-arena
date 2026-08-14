@@ -20,7 +20,7 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from flask import Blueprint, render_template, request, redirect, url_for, flash, send_file, Response, make_response, jsonify, current_app, session, g
 from flask_login import login_required, current_user
-from sqlalchemy import func, and_, or_, Date, DateTime, select, text
+from sqlalchemy import func, and_, or_, Boolean, Date, DateTime, Float, Integer, Numeric, select, text
 from sqlalchemy.engine.url import make_url
 from models import db, User, Material, MaterialCategory, Entry, Client, PendingBill, Booking, BookingItem, Payment, DirectSale, DirectSaleItem, GRN, GRNItem, Delivery, DeliveryItem, DeliveryPerson, DeliveryRent, Invoice, Settings, BillCounter, StaffEmail, FbmCashDrawerEntry, FbmCashDrawerCategory, get_or_create_material_category
 from utils.audit import audit_log

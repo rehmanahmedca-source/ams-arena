@@ -31,8 +31,12 @@
                                 <th>Created</th>
                                 <th>Mode</th>
                                 <th>Tenant</th>
+                                <th>Status</th>
                                 <th>Inserted</th>
+                                <th>Updated</th>
                                 <th>Skipped</th>
+                                <th>Failed</th>
+                                <th>Warnings</th>
                                 <th>Tables</th>
                                 <th>Source File</th>
                                 <th>Rows</th>
@@ -49,8 +53,12 @@
                                 <td class="text-white-50">{{ r.created_at }}</td>
                                 <td class="text-white-50">{{ r.mode }}</td>
                                 <td class="text-white-50">{{ r.tenant_name }}</td>
+                                <td><span class="badge {{ 'text-bg-success' if r.status == 'ok' else 'text-bg-warning' }}">{{ r.status or '-' }}</span></td>
                                 <td class="text-white-50">{{ r.inserted }}</td>
+                                <td class="text-white-50">{{ r.updated }}</td>
                                 <td class="text-white-50">{{ r.skipped }}</td>
+                                <td class="{{ 'text-danger fw-bold' if r.failed else 'text-white-50' }}">{{ r.failed or 0 }}</td>
+                                <td class="text-white-50">{{ r.warnings or 0 }}</td>
                                 <td class="text-white-50">{{ r.tables }}</td>
                                 <td class="text-white-50">{{ r.source_file }}</td>
                                 <td class="text-white-50">{{ r.row_count }}</td>
@@ -63,7 +71,7 @@
                             {% endfor %}
                             {% if reports|length == 0 %}
                             <tr>
-                                <td colspan="10" class="text-center text-white-50">No reports found.</td>
+                                <td colspan="15" class="text-center text-white-50">No reports found.</td>
                             </tr>
                             {% endif %}
                         </tbody>

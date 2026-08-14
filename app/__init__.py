@@ -74,6 +74,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         PREFERRED_URL_SCHEME="https" if cookie_secure else "http",
         FULL_RAW_IMPORT_ENABLED="1",
         IMPORT_UPLOADS_DIR=str(instance_dir / "import_uploads"),
+        IMPORT_REPORTS_DIR=str(instance_dir / "import_reports"),
         TESTING=False,
     )
     if test_config:

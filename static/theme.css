@@ -158,18 +158,90 @@ html[data-theme="light"] .badge.bg-dark {
 /* Global form rhythm + field sizing */
 .form-control,
 .form-select,
-.input-group-text,
-.btn {
+.input-group-text {
     min-height: var(--ui-field-h);
 }
 
 .form-control-sm,
 .form-select-sm,
 .input-group-sm > .form-control,
-.input-group-sm > .form-select,
-.input-group-sm > .btn {
+.input-group-sm > .form-select {
     min-height: var(--ui-field-h-sm);
 }
+
+/*
+ * App-wide action-button contract.
+ * Standard, small, and large actions each have one predictable height and
+ * padding. Width remains content-aware; w-100/flex utilities still work.
+ * btn-link, close controls, nav controls, and .btn-special intentionally opt
+ * out because they are not normal action buttons.
+ */
+.btn:not(.btn-link):not(.btn-close):not(.btn-special) {
+    min-height: var(--ui-field-h) !important;
+    padding: 0.42rem 0.9rem !important;
+    border-radius: 9px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.42rem;
+    font-size: 0.875rem;
+    line-height: 1.1;
+    font-weight: 600;
+    white-space: normal;
+    vertical-align: middle;
+}
+
+.btn-sm:not(.btn-link):not(.btn-close):not(.btn-special),
+.input-group-sm > .btn:not(.btn-link):not(.btn-close):not(.btn-special) {
+    min-height: var(--ui-field-h-sm) !important;
+    padding: 0.3rem 0.68rem !important;
+    border-radius: 8px;
+    font-size: 0.8rem;
+}
+
+.btn-lg:not(.btn-link):not(.btn-close):not(.btn-special) {
+    min-height: 46px !important;
+    padding: 0.62rem 1.15rem !important;
+    border-radius: 11px;
+    font-size: 1rem;
+}
+
+.btn:not(.btn-link):not(.btn-close) > i { line-height: 1; }
+.btn-close { min-height: auto !important; }
+
+/* Consistent, accessible semantic action colours in both themes. */
+.btn-primary { color: #fff !important; background-color: #2563eb !important; border-color: #2563eb !important; }
+.btn-primary:hover, .btn-primary:focus { background-color: #1d4ed8 !important; border-color: #1d4ed8 !important; }
+.btn-success { color: #fff !important; background-color: #16835f !important; border-color: #16835f !important; }
+.btn-success:hover, .btn-success:focus { background-color: #0f6b4d !important; border-color: #0f6b4d !important; }
+.btn-warning { color: #231800 !important; background-color: #f5b82e !important; border-color: #f5b82e !important; }
+.btn-warning:hover, .btn-warning:focus { background-color: #dfa018 !important; border-color: #dfa018 !important; }
+.btn-danger { color: #fff !important; background-color: #dc3545 !important; border-color: #dc3545 !important; }
+.btn-danger:hover, .btn-danger:focus { background-color: #b92534 !important; border-color: #b92534 !important; }
+.btn-info { color: #fff !important; background-color: #087f9c !important; border-color: #087f9c !important; }
+.btn-info:hover, .btn-info:focus { background-color: #096b82 !important; border-color: #096b82 !important; }
+.btn-secondary, .btn-dark { color: #fff !important; background-color: #475569 !important; border-color: #475569 !important; }
+.btn-secondary:hover, .btn-secondary:focus, .btn-dark:hover, .btn-dark:focus { background-color: #334155 !important; border-color: #334155 !important; }
+
+.btn-outline-primary { color: #60a5fa !important; border-color: #3b82f6 !important; }
+.btn-outline-success { color: #34d399 !important; border-color: #16835f !important; }
+.btn-outline-warning { color: var(--accent) !important; border-color: #d99a16 !important; }
+.btn-outline-danger { color: #fb7185 !important; border-color: #e11d48 !important; }
+.btn-outline-info { color: #22d3ee !important; border-color: #0891b2 !important; }
+.btn-outline-secondary, .btn-outline-light { color: var(--text-primary) !important; border-color: var(--border-strong) !important; }
+.btn-outline-primary:hover, .btn-outline-primary:focus { color: #fff !important; background: #2563eb !important; }
+.btn-outline-success:hover, .btn-outline-success:focus { color: #fff !important; background: #16835f !important; }
+.btn-outline-warning:hover, .btn-outline-warning:focus { color: #231800 !important; background: #f5b82e !important; }
+.btn-outline-danger:hover, .btn-outline-danger:focus { color: #fff !important; background: #dc3545 !important; }
+.btn-outline-info:hover, .btn-outline-info:focus { color: #fff !important; background: #087f9c !important; }
+.btn-outline-secondary:hover, .btn-outline-secondary:focus,
+.btn-outline-light:hover, .btn-outline-light:focus { color: var(--text-primary) !important; background: var(--surface-2) !important; }
+
+html[data-theme="light"] .btn-outline-primary { color: #1d4ed8 !important; }
+html[data-theme="light"] .btn-outline-success { color: #0f6b4d !important; }
+html[data-theme="light"] .btn-outline-warning { color: #925f00 !important; }
+html[data-theme="light"] .btn-outline-danger { color: #be123c !important; }
+html[data-theme="light"] .btn-outline-info { color: #0e6f86 !important; }
 
 textarea.form-control {
     min-height: 72px;

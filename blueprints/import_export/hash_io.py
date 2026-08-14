@@ -101,39 +101,108 @@ def _filter_excel_bytes_to_sheets(file_bytes, allowed_sheets):
 
 
 def _normalize_excel_cell(value, col=None):
+    """Convert one workbook value to the Python type expected by SQLAlchemy.
+
+    Full XLSX exports intentionally serialize dates as ISO text so they remain
+    portable.  SQLite's Date/DateTime binders reject that text on restore;
+    conversion therefore has to happen *before* an INSERT or ORM autoflush.
+    Invalid typed values raise a short validation error which the importer can
+    attach to that row without poisoning the surrounding transaction.
+    """
     try:
         if pd.isna(value):
             return None
     except Exception:
         pass
-    if isinstance(value, pd.Timestamp):
-        return value.to_pydatetime()
-    if hasattr(value, 'item'):
+
+    if hasattr(value, 'item') and not isinstance(value, (str, bytes, datetime, date)):
         try:
-            return value.item()
+            value = value.item()
         except Exception:
-            return value
-    if col is not None and isinstance(value, str):
-        s = value.strip()
+            pass
+
+    if col is None:
+        if isinstance(value, pd.Timestamp):
+            return value.to_pydatetime()
+        return value
+
+    col_name = getattr(col, 'name', 'value')
+    col_type = col.type
+    if isinstance(value, str) and not value.strip():
+        return None
+
+    if isinstance(col_type, DateTime):
+        if isinstance(value, pd.Timestamp):
+            value = value.to_pydatetime()
+        if isinstance(value, datetime):
+            # The application stores local, timezone-naive timestamps.
+            return value.replace(tzinfo=None) if value.tzinfo else value
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return pd.to_datetime(value, unit='D', origin='1899-12-30').to_pydatetime()
+            except Exception as exc:
+                raise ValueError(f"{col_name}: invalid date/time '{value}'") from exc
+        s = str(value).strip()
         if not s:
-            return value
-        # Normalize UTC "Z" suffix for fromisoformat.
+            return None
         if s.endswith('Z'):
             s = s[:-1] + '+00:00'
-        if isinstance(col.type, DateTime):
+        try:
+            parsed = datetime.fromisoformat(s)
+        except Exception:
             try:
-                return datetime.fromisoformat(s)
-            except Exception:
-                return value
-        if isinstance(col.type, Date):
-            try:
-                if 'T' in s:
-                    s = s.split('T', 1)[0]
-                elif ' ' in s:
-                    s = s.split(' ', 1)[0]
-                return date.fromisoformat(s)
-            except Exception:
-                return value
+                parsed = pd.to_datetime(s, errors='raise').to_pydatetime()
+            except Exception as exc:
+                raise ValueError(f"{col_name}: invalid date/time '{str(value)[:80]}'") from exc
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+    # DateTime is a Date subclass in SQLAlchemy, so this check must be second.
+    if isinstance(col_type, Date):
+        if isinstance(value, pd.Timestamp):
+            return value.date()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        s = str(value).strip()
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(s.split('T', 1)[0].split(' ', 1)[0])
+        except Exception as exc:
+            raise ValueError(f"{col_name}: invalid date '{str(value)[:80]}'") from exc
+
+    if isinstance(col_type, Boolean):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        s = str(value).strip().lower()
+        if s in ('1', 'true', 'yes', 'on', 'y'):
+            return True
+        if s in ('0', 'false', 'no', 'off', 'n'):
+            return False
+        raise ValueError(f"{col_name}: invalid true/false value '{str(value)[:80]}'")
+
+    if isinstance(col_type, Integer):
+        try:
+            number = float(value)
+            if not number.is_integer():
+                raise ValueError
+            return int(number)
+        except Exception as exc:
+            raise ValueError(f"{col_name}: invalid whole number '{str(value)[:80]}'") from exc
+
+    if isinstance(col_type, (Float, Numeric)):
+        try:
+            return float(value)
+        except Exception as exc:
+            raise ValueError(f"{col_name}: invalid number '{str(value)[:80]}'") from exc
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
     return value
 
 

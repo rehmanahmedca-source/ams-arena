@@ -57,7 +57,9 @@ _USER_BOOL_COLS = {
     'can_manage_clients', 'can_manage_suppliers', 'can_manage_materials',
     'can_manage_delivery_persons', 'can_access_settings', 'restrict_backdated_edit',
 }
-_USER_COL_NAMES = {c.name for c in User.__table__.columns}
+_USER_COLS_BY_NAME = {c.name: c for c in User.__table__.columns}
+_USER_COL_NAMES = set(_USER_COLS_BY_NAME)
+_IMPORT_REPORT_MAX_INLINE_ISSUES = 5
 
 
 def _as_bool_cell(val):
@@ -68,39 +70,65 @@ def _as_bool_cell(val):
         return True
     if s in ('0', 'false', 'no', 'off', 'n', '', 'none', 'nan'):
         return False
-    return bool(val)
+    raise ValueError(f"invalid true/false value '{str(val)[:80]}'")
+
+
+def _short_import_error(exc, limit=300):
+    """Human-readable error without SQL text, parameters, or huge trace text."""
+    original = getattr(exc, 'orig', None)
+    message = str(original or exc or 'Unknown import error')
+    message = re.sub(r'\s*\[SQL:.*$', '', message, flags=re.IGNORECASE | re.DOTALL)
+    message = re.sub(r'\s*\(Background on this error at:.*$', '', message, flags=re.IGNORECASE | re.DOTALL)
+    message = ' '.join(message.split())
+    return (message[:limit - 1] + '…') if len(message) > limit else message
+
+
+def _safe_report_payload(payload):
+    """Serialize a row for diagnostics while keeping credentials out of reports."""
+    safe = {}
+    for key, value in (payload or {}).items():
+        low = str(key).lower()
+        if any(secret in low for secret in ('password', 'secret', 'token', 'code_hash')):
+            safe[key] = '[redacted]'
+        elif isinstance(value, (datetime, date)):
+            safe[key] = value.isoformat()
+        else:
+            safe[key] = value
+    return safe
 
 
 def _user_payload_from_row(src):
     payload = {}
-    for col in _USER_COL_NAMES:
-        if col == 'id':
+    for name, col in _USER_COLS_BY_NAME.items():
+        if name == 'id':
             continue
-        if col not in getattr(src, 'index', []) and col not in (src if isinstance(src, dict) else {}):
-            # pandas Series
-            try:
-                if col not in src:
-                    continue
-            except Exception:
-                continue
         try:
-            raw = src.get(col) if hasattr(src, 'get') else src[col]
+            if name not in src:
+                continue
+            raw = src.get(name)
         except Exception:
             continue
-        if raw is None or (isinstance(raw, float) and pd is not None and pd.isna(raw)):
+        try:
+            if raw is None or pd.isna(raw):
+                continue
+        except Exception:
+            if raw is None:
+                continue
+        if isinstance(raw, str) and not raw.strip():
             continue
-        if str(raw).strip() == '' or str(raw).strip().lower() == 'nan':
-            continue
-        if col in _USER_BOOL_COLS:
-            payload[col] = _as_bool_cell(raw)
-        elif col == 'role':
-            role = str(raw).strip().lower()
-            payload[col] = 'admin' if role in ('admin', 'administrator') else ('user' if role else 'user')
-        elif col == 'status':
-            st = str(raw).strip().lower()
-            payload[col] = 'inactive' if st in ('inactive', 'disabled', '0', 'false') else 'active'
-        else:
-            payload[col] = raw
+
+        # Use the same typed conversion as physical-table rows.  This is the
+        # key protection for User.created_at being exported as ISO text.
+        value = _normalize_excel_cell(raw, col)
+        if name in _USER_BOOL_COLS:
+            value = _as_bool_cell(value)
+        elif name == 'role':
+            role = str(value or '').strip().lower()
+            value = 'admin' if role in ('admin', 'administrator') else 'user'
+        elif name == 'status':
+            status = str(value or '').strip().lower()
+            value = 'inactive' if status in ('inactive', 'disabled', '0', 'false') else 'active'
+        payload[name] = value
     return payload
 
 
@@ -109,78 +137,184 @@ def _find_user_sheet(xls):
     for want in ('user', 'users', 'User', 'Users'):
         if want in names:
             return want
-    for n in names:
-        if str(n).strip().lower() in ('user', 'users'):
-            return n
+    for name in names:
+        if str(name).strip().lower() in ('user', 'users'):
+            return name
     return None
 
 
 def _restore_users_from_excel(xls):
-    """Always restore managers/roles from backup. Never delete existing users."""
+    """Restore each valid manager independently; never delete local users.
+
+    Every row is flushed inside a SAVEPOINT.  A bad date, duplicate username,
+    or future-schema value is reported for that user while subsequent rows and
+    business tables continue importing with a healthy Session.
+    """
     sheet = _find_user_sheet(xls)
-    result = {'name': 'user', 'status': 'skipped', 'inserted': 0, 'updated': 0, 'failed': 0, 'error': '', 'people': []}
+    result = {
+        'name': 'user', 'status': 'skipped', 'inserted': 0, 'updated': 0,
+        'skipped': 0, 'failed': 0, 'error': '', 'people': [], 'issue_rows': [],
+    }
     if not sheet:
-        result['error'] = 'No user/Users sheet in this file (older backup). Users on this PC were kept.'
+        result['error'] = 'User sheet not present (older/partial backup); users already on this system were kept.'
+        result['issue_rows'].append({
+            'table': 'user', 'sheet_row': '', 'status': 'unavailable',
+            'reason': result['error'], 'primary_key': '', 'label': '', 'row_json': '',
+        })
         return result
     try:
         df = pd.read_excel(xls, sheet).fillna('')
         df.columns = [str(c).strip() for c in df.columns]
     except Exception as exc:
         result['status'] = 'failed'
-        result['error'] = str(exc)
+        result['failed'] = 1
+        result['error'] = _short_import_error(exc)
+        result['issue_rows'].append({
+            'table': 'user', 'sheet_row': '', 'status': 'failed',
+            'reason': result['error'], 'primary_key': '', 'label': '', 'row_json': '',
+        })
         return result
+
     me = (getattr(current_user, 'username', None) or '').strip().lower()
-    for _, src in df.iterrows():
-        payload = _user_payload_from_row(src)
-        username = str(payload.get('username') or '').strip()
-        if not username:
-            continue
-        if username.lower() == 'root':
-            continue
+    messages = []
+    for source_index, src in df.iterrows():
+        excel_row = int(source_index) + 2 if isinstance(source_index, int) else str(source_index)
+        raw_username = str(src.get('username', '') or '').strip()
         try:
-            existing = User.query.filter(func.lower(func.trim(User.username)) == username.lower()).first()
-            if existing and existing.username.lower() == me:
-                # Keep the person running restore logged in; still apply role/permissions.
-                for key in list(payload.keys()):
-                    if key in ('password_hash', 'password_plain', 'status'):
-                        payload.pop(key, None)
-            if existing:
-                for key, val in payload.items():
-                    if key in _USER_COL_NAMES and key != 'id':
-                        setattr(existing, key, val)
+            payload = _user_payload_from_row(src)
+            username = str(payload.get('username') or '').strip()
+            if not username:
+                result['skipped'] += 1
+                reason = f'Row {excel_row}: missing username; row skipped.'
+                messages.append(reason)
+                result['issue_rows'].append({
+                    'table': 'user', 'sheet_row': excel_row, 'status': 'skipped',
+                    'reason': 'missing_username', 'primary_key': '', 'label': '', 'row_json': '',
+                })
+                continue
+            if username.lower() == 'root':
+                result['skipped'] += 1
+                result['people'].append({'username': username, 'role': payload.get('role') or 'root', 'action': 'kept (protected)'})
+                result['issue_rows'].append({
+                    'table': 'user', 'sheet_row': excel_row, 'status': 'skipped',
+                    'reason': 'protected_root_user', 'primary_key': '', 'label': username, 'row_json': '',
+                })
+                continue
+
+            with db.session.no_autoflush:
+                existing = User.query.filter(
+                    func.lower(func.trim(User.username)) == username.lower()
+                ).first()
+
+            if existing and (existing.username or '').strip().lower() == me:
+                # Keep the operator logged in while still restoring permissions.
+                for key in ('password_hash', 'password_plain', 'status'):
+                    payload.pop(key, None)
+
+            with db.session.begin_nested():
+                if existing:
+                    for key, value in payload.items():
+                        if key in _USER_COL_NAMES and key != 'id':
+                            setattr(existing, key, value)
+                    db.session.flush()
+                    action = 'updated'
+                else:
+                    clean = {k: v for k, v in payload.items() if k in _USER_COL_NAMES and k != 'id'}
+                    db.session.add(User(**clean))
+                    db.session.flush()
+                    action = 'created'
+
+            if action == 'updated':
                 result['updated'] += 1
-                result['people'].append({'username': username, 'role': payload.get('role') or existing.role, 'action': 'updated'})
             else:
-                clean = {k: v for k, v in payload.items() if k in _USER_COL_NAMES and k != 'id'}
-                if 'username' not in clean:
-                    continue
-                db.session.add(User(**clean))
                 result['inserted'] += 1
-                result['people'].append({'username': username, 'role': clean.get('role') or 'user', 'action': 'created'})
+            result['people'].append({
+                'username': username,
+                'role': payload.get('role') or (getattr(existing, 'role', None) if existing else 'user'),
+                'action': action,
+            })
         except Exception as exc:
+            reason = _short_import_error(exc)
             result['failed'] += 1
-            result['people'].append({'username': username, 'role': payload.get('role') or '', 'action': 'failed', 'error': str(exc)[:200]})
-    if result['failed'] and not (result['inserted'] or result['updated']):
-        result['status'] = 'failed'
-    elif result['failed']:
-        result['status'] = 'partial'
+            username = raw_username or '(missing username)'
+            messages.append(f'Row {excel_row} ({username}): {reason}')
+            result['people'].append({
+                'username': username, 'role': '', 'action': 'failed', 'error': reason,
+            })
+            result['issue_rows'].append({
+                'table': 'user', 'sheet_row': excel_row, 'status': 'failed',
+                'reason': reason, 'primary_key': '', 'label': username, 'row_json': '',
+            })
+
+    if result['failed']:
+        result['status'] = 'partial' if (result['inserted'] or result['updated']) else 'failed'
+    elif result['skipped'] and not (result['inserted'] or result['updated']):
+        result['status'] = 'skipped'
     else:
         result['status'] = 'ok'
+    result['error'] = ' | '.join(messages[:_IMPORT_REPORT_MAX_INLINE_ISSUES])
+    if len(messages) > _IMPORT_REPORT_MAX_INLINE_ISSUES:
+        result['error'] += f" | +{len(messages) - _IMPORT_REPORT_MAX_INLINE_ISSUES} more (download report)"
     return result
+
+
+def _full_import_report_dir():
+    return current_app.config.get('IMPORT_REPORTS_DIR') or os.path.join(current_app.instance_path, 'import_reports')
+
+
+def _write_full_import_report(report, issue_rows, mode, scope_ctx, source_file_name):
+    """Persist an issue-only CSV plus metadata; report creation cannot undo data."""
+    stamp = pk_now().strftime('%Y%m%d_%H%M%S_%f')
+    report_name = f'full_raw_import_report_{stamp}.csv'
+    report_dir = _full_import_report_dir()
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, report_name)
+    fields = ['table', 'sheet_row', 'status', 'reason', 'primary_key', 'label', 'row_json']
+    with open(report_path, 'w', newline='', encoding='utf-8-sig') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        for issue in issue_rows:
+            writer.writerow({key: issue.get(key, '') for key in fields})
+
+    report_meta = {
+        'name': report_name,
+        'created_at': pk_now().strftime('%Y-%m-%d %H:%M:%S'),
+        'mode': mode,
+        'scope': scope_ctx.get('scope'),
+        'inserted': report.get('inserted', 0),
+        'updated': report.get('updated', 0),
+        'skipped': report.get('skipped', 0),
+        'failed': report.get('failed', 0),
+        'warnings': report.get('warnings', 0),
+        'tables': report.get('tables', 0),
+        'status': report.get('status'),
+        'source_file': source_file_name,
+        'issue_rows_count': len(issue_rows),
+    }
+    meta_path = os.path.join(report_dir, report_name.replace('.csv', '.meta.json'))
+    with open(meta_path, 'w', encoding='utf-8') as handle:
+        json.dump(report_meta, handle, ensure_ascii=False, indent=2)
+    return report_name, report_meta
 
 
 def _run_full_raw_import_bytes(file_bytes, scope_ctx, mode, source_file_name):
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes))
-    except Exception as e:
-        raise ValueError(f'Invalid Excel file: {e}')
+    except Exception as exc:
+        raise ValueError(f'Invalid Excel file: {_short_import_error(exc)}') from exc
 
     scoped_tables = _full_raw_tables_for_scope(scope_ctx)
-    selected_tables = []
-    for t in scoped_tables:
-        if t.name[:31] in xls.sheet_names:
-            selected_tables.append(t)
+    sheet_to_table = {}
+    for table in scoped_tables:
+        sheet_name = table.name[:31]
+        if sheet_name in sheet_to_table and sheet_to_table[sheet_name].name != table.name:
+            raise RuntimeError(
+                f"Two database tables map to Excel sheet '{sheet_name}'. Export/import cannot continue safely."
+            )
+        sheet_to_table[sheet_name] = table
 
+    workbook_sheets = list(xls.sheet_names or [])
+    selected_tables = [sheet_to_table[name] for name in workbook_sheets if name in sheet_to_table]
     if not selected_tables:
         raise ValueError(
             'No importable sheets found for current scope. The file does not look like an '
@@ -188,162 +322,253 @@ def _run_full_raw_import_bytes(file_bytes, scope_ctx, mode, source_file_name):
             'create a compatible backup, then import that file.'
         )
 
-    report = {'inserted': 0, 'skipped': 0, 'tables': len(selected_tables), 'table_results': [], 'users': []}
-    report_name = None
-    skipped_rows = []
+    report = {
+        'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0, 'errors': 0,
+        'warnings': 0, 'tables': len(selected_tables), 'status': 'ok',
+        'table_results': [], 'users': [],
+    }
+    issue_rows = []
     target_tenant_id = scope_ctx.get('target_tenant_id')
-    user_restore = _restore_users_from_excel(xls)
-    report['users'] = user_restore.get('people') or []
-    report['table_results'].append({
-        'name': 'user (roles/managers)',
-        'status': user_restore.get('status'),
-        'inserted': user_restore.get('inserted') or 0,
-        'updated': user_restore.get('updated') or 0,
-        'skipped': 0,
-        'failed': user_restore.get('failed') or 0,
-        'error': user_restore.get('error') or '',
-    })
-    report['inserted'] += (user_restore.get('inserted') or 0) + (user_restore.get('updated') or 0)
+
+    # Explain sheets this app version does not understand instead of silently
+    # pretending they were restored.
+    ignored_sheets = [
+        name for name in workbook_sheets
+        if name not in sheet_to_table and name != META_SHEET_NAME
+    ]
+    for sheet_name in ignored_sheets:
+        report['warnings'] += 1
+        note = 'No matching database table exists in this app version; sheet was not imported.'
+        report['table_results'].append({
+            'name': sheet_name, 'status': 'unavailable', 'inserted': 0, 'updated': 0,
+            'skipped': 0, 'failed': 0, 'error': note,
+        })
+        issue_rows.append({
+            'table': sheet_name, 'sheet_row': '', 'status': 'unavailable',
+            'reason': note, 'primary_key': '', 'label': '', 'row_json': '',
+        })
+
+    # A literal export with a missing sheet is incomplete.  Keep that table's
+    # current rows (even in overwrite mode) and identify it clearly.
+    if _read_meta_kind_from_excel(xls) == 'literal_all':
+        workbook_set = set(workbook_sheets)
+        for table in scoped_tables:
+            expected = table.name[:31]
+            if expected in workbook_set:
+                continue
+            report['warnings'] += 1
+            note = 'Sheet is not available in this backup; existing table data was kept.'
+            report['table_results'].append({
+                'name': table.name, 'status': 'unavailable', 'inserted': 0, 'updated': 0,
+                'skipped': 0, 'failed': 0, 'error': note,
+            })
+            issue_rows.append({
+                'table': table.name, 'sheet_row': '', 'status': 'unavailable',
+                'reason': note, 'primary_key': '', 'label': '', 'row_json': '',
+            })
 
     if mode == 'replace_tenant_data':
-        # Replace mode must fully reset tenant-scoped dataset for the target tenant,
-        # even if some tables are missing in the incoming workbook.
-        replace_targets = list(reversed(_full_raw_tables_for_scope(scope_ctx)))
-        for t in replace_targets:
-            if scope_ctx.get('scope') != 'tenant' or 'tenant_id' not in t.c:
+        # Clear only tables actually supplied by the workbook. Missing sheets
+        # remain untouched, which makes older/partial backups recoverable.
+        for table in reversed(selected_tables):
+            if table.name in WIPE_PROTECTED_TABLES or table.name == 'user':
                 continue
-            if t.name in WIPE_PROTECTED_TABLES:
-                continue
-            if scope_ctx.get('scope') != 'tenant' or 'tenant_id' not in t.c:
-                continue
-            db.session.execute(t.delete().where(t.c.tenant_id == target_tenant_id))
+            if scope_ctx.get('scope') == 'tenant' and 'tenant_id' in table.c:
+                db.session.execute(table.delete().where(table.c.tenant_id == target_tenant_id))
+            else:
+                db.session.execute(table.delete())
 
-    for t in selected_tables:
-        if t.name == 'user':
+    user_restore = _restore_users_from_excel(xls)
+    report['users'] = user_restore.get('people') or []
+    user_stat = {
+        'name': 'user (roles/managers)',
+        'status': user_restore.get('status'),
+        'inserted': user_restore.get('inserted', 0),
+        'updated': user_restore.get('updated', 0),
+        'skipped': user_restore.get('skipped', 0),
+        'failed': user_restore.get('failed', 0),
+        'error': user_restore.get('error') or '',
+    }
+    report['table_results'].append(user_stat)
+    report['inserted'] += user_stat['inserted']
+    report['updated'] += user_stat['updated']
+    report['skipped'] += user_stat['skipped']
+    report['failed'] += user_stat['failed']
+    report['errors'] += user_stat['failed']
+    if user_stat['status'] == 'skipped' and user_stat['error']:
+        already_reported_missing_user = any(
+            row.get('name') == 'user' and row.get('status') == 'unavailable'
+            for row in report['table_results'][:-1]
+        )
+        if not already_reported_missing_user:
+            report['warnings'] += 1
+    issue_rows.extend(user_restore.get('issue_rows') or [])
+
+    for table in selected_tables:
+        if table.name == 'user':
             continue
-        table_stat = {'name': t.name, 'status': 'ok', 'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0, 'error': ''}
+        table_stat = {
+            'name': table.name, 'status': 'ok', 'inserted': 0, 'updated': 0,
+            'skipped': 0, 'failed': 0, 'error': '',
+        }
+        messages = []
         try:
-            df = pd.read_excel(xls, t.name[:31]).fillna('')
+            df = pd.read_excel(xls, table.name[:31]).fillna('')
+            df.columns = [str(column).strip() for column in df.columns]
         except Exception as exc:
-            table_stat['status'] = 'failed'
-            table_stat['error'] = str(exc)[:300]
+            reason = _short_import_error(exc)
+            table_stat.update(status='failed', failed=1, error=reason)
+            report['failed'] += 1
+            report['errors'] += 1
+            issue_rows.append({
+                'table': table.name, 'sheet_row': '', 'status': 'failed',
+                'reason': reason, 'primary_key': '', 'label': '', 'row_json': '',
+            })
             report['table_results'].append(table_stat)
             continue
-        pk_cols = [c for c in t.primary_key.columns]
-        pk_names = {c.name for c in pk_cols}
-        for _, src in df.iterrows():
+
+        unknown_columns = [name for name in df.columns if name not in table.c]
+        if unknown_columns:
+            report['warnings'] += 1
+            messages.append('Ignored unavailable column(s): ' + ', '.join(unknown_columns[:12]))
+            issue_rows.append({
+                'table': table.name, 'sheet_row': '', 'status': 'warning',
+                'reason': messages[-1], 'primary_key': '', 'label': '', 'row_json': '',
+            })
+
+        pk_cols = list(table.primary_key.columns)
+        pk_names = {column.name for column in pk_cols}
+        for source_index, src in df.iterrows():
+            excel_row = int(source_index) + 2 if isinstance(source_index, int) else str(source_index)
             payload = {}
-            for col in t.columns:
-                name = col.name
-                if name not in df.columns:
-                    continue
-                val = _normalize_excel_cell(src.get(name), col)
-                if val == '':
-                    val = None
-                if name == 'tenant_id' and scope_ctx.get('scope') == 'tenant':
-                    val = target_tenant_id
-                if col.primary_key and val in [None, '']:
-                    continue
-                payload[name] = val
-            if not payload:
-                report['skipped'] += 1
-                table_stat['skipped'] += 1
-                skipped_rows.append({
-                    'table': t.name,
-                    'reason': 'empty_payload',
-                    'pk': '',
-                    'label': '',
-                    'row_json': '',
-                })
-                continue
-            if t.name == 'user':
-                username_value = str(payload.get('username') or '').strip()
-                if not username_value:
-                    report['skipped'] += 1
-                    skipped_rows.append({
-                        'table': t.name,
-                        'reason': 'missing_username',
-                        'pk': '',
-                        'label': '',
-                        'row_json': json.dumps(_serialize_payload(payload), ensure_ascii=True),
-                    })
-                    continue
-                if username_value.lower() == 'root':
-                    report['skipped'] += 1
-                    skipped_rows.append({
-                        'table': t.name,
-                        'reason': 'blocked_root_username',
-                        'pk': '',
-                        'label': username_value,
-                        'row_json': json.dumps(_serialize_payload(payload), ensure_ascii=True),
-                    })
-                    continue
-                me = (getattr(current_user, 'username', None) or '').strip()
-                if me and username_value.lower() == me.lower():
-                    payload.pop('password_hash', None)
-                    payload.pop('status', None)
-                payload.pop('id', None)
-                existing_user = User.query.filter(
-                    func.lower(func.trim(User.username)) == username_value.lower()
-                ).first()
-                if existing_user:
-                    for key, val in payload.items():
-                        if hasattr(existing_user, key) and key not in ('id',):
-                            setattr(existing_user, key, val)
-                    report['inserted'] += 1
-                    continue
-                db.session.add(User(**{k: v for k, v in payload.items() if hasattr(User, k)}))
-                report['inserted'] += 1
-                continue
-            if pk_cols:
-                pk_values = []
-                missing_pk = False
-                for c in pk_cols:
-                    if c.name not in payload or payload[c.name] in [None, '']:
-                        missing_pk = True
-                        break
-                    pk_values.append(payload[c.name])
-                if not missing_pk:
-                    pk_cond = and_(*[c == v for c, v in zip(pk_cols, pk_values)])
-                    existing = db.session.execute(select(t).where(pk_cond).limit(1)).first()
-                    if existing:
-                        report['skipped'] += 1
-                        table_stat['skipped'] += 1
-                        label = _build_report_label(payload, pk_names)
-                        row_json = json.dumps(_serialize_payload(payload), ensure_ascii=True)
-                        skipped_rows.append({
-                            'table': t.name,
-                            'reason': 'duplicate_pk',
-                            'pk': ','.join([str(v) for v in pk_values]),
-                            'label': label,
-                            'row_json': row_json,
-                        })
+            try:
+                for column in table.columns:
+                    name = column.name
+                    if name not in df.columns:
                         continue
-            db.session.execute(t.insert().values(**payload))
-            report['inserted'] += 1
-            table_stat['inserted'] += 1
+                    value = _normalize_excel_cell(src.get(name), column)
+                    if name == 'tenant_id' and scope_ctx.get('scope') == 'tenant':
+                        value = target_tenant_id
+                    if column.primary_key and value in (None, ''):
+                        # Let an integer autoincrement key be generated.
+                        continue
+                    payload[name] = value
+
+                if not payload:
+                    report['skipped'] += 1
+                    table_stat['skipped'] += 1
+                    issue_rows.append({
+                        'table': table.name, 'sheet_row': excel_row, 'status': 'skipped',
+                        'reason': 'empty_row', 'primary_key': '', 'label': '', 'row_json': '',
+                    })
+                    continue
+
+                duplicate_values = None
+                with db.session.begin_nested():
+                    if pk_cols and all(payload.get(column.name) not in (None, '') for column in pk_cols):
+                        pk_values = [payload[column.name] for column in pk_cols]
+                        condition = and_(*[column == value for column, value in zip(pk_cols, pk_values)])
+                        with db.session.no_autoflush:
+                            if db.session.execute(select(table).where(condition).limit(1)).first():
+                                duplicate_values = pk_values
+                    if duplicate_values is None:
+                        db.session.execute(table.insert().values(**payload))
+
+                if duplicate_values is not None:
+                    report['skipped'] += 1
+                    table_stat['skipped'] += 1
+                    issue_rows.append({
+                        'table': table.name, 'sheet_row': excel_row, 'status': 'skipped',
+                        'reason': 'duplicate_primary_key',
+                        'primary_key': ','.join(str(value) for value in duplicate_values),
+                        'label': _build_report_label(payload, pk_names),
+                        'row_json': json.dumps(_safe_report_payload(payload), ensure_ascii=False, default=str),
+                    })
+                    continue
+
+                report['inserted'] += 1
+                table_stat['inserted'] += 1
+            except Exception as exc:
+                reason = _short_import_error(exc)
+                report['failed'] += 1
+                report['errors'] += 1
+                table_stat['failed'] += 1
+                if len(messages) < _IMPORT_REPORT_MAX_INLINE_ISSUES:
+                    messages.append(f'Row {excel_row}: {reason}')
+                issue_rows.append({
+                    'table': table.name, 'sheet_row': excel_row, 'status': 'failed',
+                    'reason': reason,
+                    'primary_key': ','.join(
+                        str(payload.get(column.name, '')) for column in pk_cols
+                    ),
+                    'label': _build_report_label(payload, pk_names),
+                    'row_json': json.dumps(_safe_report_payload(payload), ensure_ascii=False, default=str),
+                })
+
         if table_stat['failed']:
             table_stat['status'] = 'partial' if table_stat['inserted'] else 'failed'
+        elif unknown_columns:
+            table_stat['status'] = 'warning'
+        table_stat['error'] = ' | '.join(messages)
+        if table_stat['failed'] > _IMPORT_REPORT_MAX_INLINE_ISSUES:
+            table_stat['error'] += (
+                f" | +{table_stat['failed'] - _IMPORT_REPORT_MAX_INLINE_ISSUES} more failed row(s) "
+                '(download report)'
+            )
         report['table_results'].append(table_stat)
 
+    if report['failed']:
+        report['status'] = 'partial' if (report['inserted'] or report['updated']) else 'failed'
+    elif report['warnings']:
+        report['status'] = 'warning'
+    else:
+        report['status'] = 'ok'
+
+    # SAVEPOINT failures above are already rolled back. This commit persists all
+    # valid rows and proves the Session is still usable after rejected rows.
     db.session.commit()
-    report_name = f"full_raw_import_report_{pk_now().strftime('%Y%m%d_%H%M%S')}"
-    if True:
-        report_name = report_name
-        report_meta = {
-            'name': report_name,
-            'created_at': pk_now().strftime('%Y-%m-%d %H:%M:%S'),
-            'mode': mode,
-            'scope': scope_ctx.get('scope'),
-            'inserted': report['inserted'],
-            'skipped': report['skipped'],
-            'tables': report['tables'],
-            'source_file': source_file_name,
-            'skipped_rows_count': len(skipped_rows),
-        }
+
+    report_name = None
+    try:
+        report_name, report_meta = _write_full_import_report(
+            report, issue_rows, mode, scope_ctx, source_file_name
+        )
         session['full_raw_import_report'] = report_name
         session['full_raw_import_report_meta'] = report_meta
+    except Exception as exc:
+        report['warnings'] += 1
+        report['status'] = 'warning' if report['status'] == 'ok' else report['status']
+        report['table_results'].append({
+            'name': 'import report file', 'status': 'warning', 'inserted': 0,
+            'updated': 0, 'skipped': 0, 'failed': 0,
+            'error': f'Data imported, but the downloadable report could not be written: {_short_import_error(exc)}',
+        })
     return report, report_name
+
+
+def _process_master_rows(sheet_name, df, processor, report):
+    """Run legacy/master processors one row per SAVEPOINT.
+
+    The processors predate partial imports and normally receive a full
+    DataFrame. Supplying one row at a time means a conversion/integrity error
+    can be rolled back and reported without discarding good rows from the same
+    sheet or leaving the Session in a failed state.
+    """
+    counter_keys = ('imported', 'updated', 'skipped', 'errors')
+    for ordinal, (source_index, _row) in enumerate(df.iterrows(), start=2):
+        before = {key: int(report.get(key, 0) or 0) for key in counter_keys}
+        try:
+            with db.session.begin_nested():
+                processor(df.loc[[source_index]].copy())
+                db.session.flush()
+        except Exception as exc:
+            for key in counter_keys:
+                report[key] = before[key]
+            report['errors'] = before['errors'] + 1
+            reason = _short_import_error(exc)
+            report.setdefault('error_details', []).append(
+                f'{sheet_name} row {ordinal}: {reason}'
+            )
 
 
 def _run_master_import_bytes(file_bytes, actor_username=None, progress_cb=None):
@@ -352,7 +577,11 @@ def _run_master_import_bytes(file_bytes, actor_username=None, progress_cb=None):
         raise RuntimeError(f"Backup failed: {msg}")
 
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
-    report = {'imported': 0, 'updated': 0, 'skipped': 0, 'errors': 0, 'table_results': [], 'users': []}
+    report = {
+        'imported': 0, 'updated': 0, 'skipped': 0, 'errors': 0,
+        'failed': 0, 'warnings': 0, 'status': 'ok',
+        'error_details': [], 'discrepancies': [], 'table_results': [], 'users': [],
+    }
     user_restore = _restore_users_from_excel(xls)
     report['users'] = user_restore.get('people') or []
     report['table_results'].append({
@@ -390,24 +619,46 @@ def _run_master_import_bytes(file_bytes, actor_username=None, progress_cb=None):
         if not exists:
             continue
 
+        before_counts = {
+            'imported': report.get('imported', 0),
+            'updated': report.get('updated', 0),
+            'skipped': report.get('skipped', 0),
+            'errors': report.get('errors', 0),
+        }
+        before_error_details = len(report.get('error_details') or [])
         if sheet_name == 'Clients':
-            _process_clients(_read_sheet('Clients'), 'update', report)
+            df = _read_sheet('Clients')
+            _process_master_rows(sheet_name, df, lambda one: _process_clients(one, 'update', report), report)
         elif sheet_name == 'MaterialCategories':
-            _process_material_categories(_read_sheet('MaterialCategories'), report)
+            df = _read_sheet('MaterialCategories')
+            _process_master_rows(sheet_name, df, lambda one: _process_material_categories(one, report), report)
         elif sheet_name == 'Materials':
-            _process_materials(_read_sheet('Materials'), report)
+            df = _read_sheet('Materials')
+            _process_master_rows(sheet_name, df, lambda one: _process_materials(one, report), report)
         elif sheet_name == 'PendingBills':
-            _process_pending_bills(_read_sheet('PendingBills'), 'update', 'create', report)
+            df = _read_sheet('PendingBills')
+            _process_master_rows(
+                sheet_name, df,
+                lambda one: _process_pending_bills(one, 'update', 'create', report),
+                report,
+            )
         elif sheet_name == 'Dispatch':
             df = _read_sheet('Dispatch')
             df.rename(columns={'cement_brand': 'item', 'client_name': 'customer', 'bill_date': 'date', 'nimbus': 'nimbus_no'}, inplace=True)
-            _process_dispatch(df, 'skip', 'create', report)
+            _process_master_rows(
+                sheet_name, df,
+                lambda one: _process_dispatch(one, 'skip', 'create', report),
+                report,
+            )
         elif sheet_name == 'Bookings':
-            _process_bookings(_read_sheet('Bookings'), 'update', report)
+            df = _read_sheet('Bookings')
+            _process_master_rows(sheet_name, df, lambda one: _process_bookings(one, 'update', report), report)
         elif sheet_name == 'BookingItems':
-            _process_booking_items(_read_sheet('BookingItems'), 'update', report)
+            df = _read_sheet('BookingItems')
+            _process_master_rows(sheet_name, df, lambda one: _process_booking_items(one, 'update', report), report)
         elif sheet_name == 'Payments':
-            _process_payments(_read_sheet('Payments'), 'update', report)
+            df = _read_sheet('Payments')
+            _process_master_rows(sheet_name, df, lambda one: _process_payments(one, 'update', report), report)
         elif sheet_name == 'FBMCashDrawer':
             df = _read_sheet('FBMCashDrawer')
             for _, row in df.iterrows():
@@ -483,13 +734,17 @@ def _run_master_import_bytes(file_bytes, actor_username=None, progress_cb=None):
                     db.session.add(FbmCashDrawerCategory(name=name, is_active=is_active))
                     report['imported'] += 1
         elif sheet_name == 'Sales':
-            _process_sales(_read_sheet('Sales'), 'update', report)
+            df = _read_sheet('Sales')
+            _process_master_rows(sheet_name, df, lambda one: _process_sales(one, 'update', report), report)
         elif sheet_name == 'SaleItems':
-            _process_sale_items(_read_sheet('SaleItems'), 'update', report)
+            df = _read_sheet('SaleItems')
+            _process_master_rows(sheet_name, df, lambda one: _process_sale_items(one, 'update', report), report)
         elif sheet_name == 'GRN':
-            _process_grn(_read_sheet('GRN'), 'update', report)
+            df = _read_sheet('GRN')
+            _process_master_rows(sheet_name, df, lambda one: _process_grn(one, 'update', report), report)
         elif sheet_name == 'GRNItems':
-            _process_grn_items(_read_sheet('GRNItems'), 'update', report)
+            df = _read_sheet('GRNItems')
+            _process_master_rows(sheet_name, df, lambda one: _process_grn_items(one, 'update', report), report)
         elif sheet_name == 'DeliveryPersons':
             df = _read_sheet('DeliveryPersons')
             for _, row in df.iterrows():
@@ -572,6 +827,24 @@ def _run_master_import_bytes(file_bytes, actor_username=None, progress_cb=None):
                     ))
                     report['imported'] += 1
 
+        imported_delta = report.get('imported', 0) - before_counts['imported']
+        updated_delta = report.get('updated', 0) - before_counts['updated']
+        skipped_delta = report.get('skipped', 0) - before_counts['skipped']
+        error_delta = report.get('errors', 0) - before_counts['errors']
+        new_error_details = (report.get('error_details') or [])[before_error_details:]
+        report['table_results'].append({
+            'name': sheet_name,
+            'status': 'partial' if error_delta else 'ok',
+            'inserted': imported_delta,
+            'updated': updated_delta,
+            'skipped': skipped_delta,
+            'failed': error_delta,
+            'error': ' | '.join(new_error_details[:_IMPORT_REPORT_MAX_INLINE_ISSUES]),
+        })
+
+    if report.get('errors'):
+        report['failed'] = report.get('errors', 0)
+        report['status'] = 'partial' if (report.get('imported') or report.get('updated')) else 'failed'
     if progress_cb:
         progress_cb(97, 'Finalizing import...')
     db.session.commit()
