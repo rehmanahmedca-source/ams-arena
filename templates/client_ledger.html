@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="ledger-print-area">
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
     <div>
         <h2 class="mb-1 text-warning">Client Ledger: {{ client.name }}</h2>
         <span class="badge bg-dark border border-secondary text-info">Client Code: {{ client.code or 'N/A' }}</span>
@@ -12,7 +12,7 @@
             {% if (client.opening_balance or 0) > 0 %}(Pending Due){% elif (client.opening_balance or 0) < 0 %}(Advance/Credit){% endif %}
         </div>
     </div>
-    <div class="d-flex gap-2">
+    <div class="d-flex gap-2 flex-wrap ledger-toolbar">
         <button class="btn btn-outline-info d-print-none btn-sm" data-bs-toggle="modal" data-bs-target="#openingBalanceModal">
             <i class="bi bi-wallet2"></i> Set Opening Balance
         </button>
@@ -194,7 +194,7 @@ function submitCancelSelection{{ client.id }}() {
         <span class="badge bg-success text-white">{{ financial_history|length }} Transactions</span>
     </div>
     <div class="table-responsive ledger-table-wrap">
-        <table class="table table-dark table-hover align-middle mb-0 financial-ledger-table">
+        <table class="table table-dark table-hover align-middle mb-0 financial-ledger-table table-stack-cards">
             <thead style="background: #0f172a;">
                 <tr>
                     <th class="fw-bold py-3 ps-4 border-bottom border-secondary text-white-50 ledger-col-date">Date</th>
@@ -210,11 +210,11 @@ function submitCancelSelection{{ client.id }}() {
                 {% for t in financial_history %}
                 <tr style="border-bottom: 1px solid #334155;">
                     {% set _dtxt = (t.date_display or t.date|string) %}
-                    <td class="ps-4 py-3 small text-white-50 ledger-date-cell">
+                    <td class="ps-4 py-3 small text-white-50 ledger-date-cell" data-label="Date">
                         <div class="ledger-date-main">{{ _dtxt[:10] }}</div>
                         <div class="ledger-date-sub">{{ _dtxt[11:16] if _dtxt|length > 15 else '' }}</div>
                     </td>
-                    <td class="ledger-desc-cell">
+                    <td class="ledger-desc-cell" data-label="Description">
                         {% if t.is_cancel_entry %}
                         <span class="text-info fw-bold">{{ t.description }}</span>
                         <div class="small text-warning mt-1">
@@ -232,17 +232,17 @@ function submitCancelSelection{{ client.id }}() {
                         <span class="text-info fw-bold">{{ t.description }}</span>
                         {% endif %}
                     </td>
-                    <td class="ledger-bill-cell">
+                    <td class="ledger-bill-cell" data-label="Bill #">
                         {% if t.bill_no %}
                         <a href="{{ url_for('view_bill', bill_no=t.bill_no|replace('#', '%23')) }}" class="badge bg-dark border border-secondary text-warning text-decoration-none">{{ t.bill_no }}</a>
                         {% else %}
                         <span class="badge bg-dark border border-secondary text-white-50">---</span>
                         {% endif %}
                     </td>
-                    <td class="text-end text-danger fw-bold">{{ "{:,.3f}".format(t.debit).rstrip('0').rstrip('.') if t.debit > 0 else '---' }}</td>
-                    <td class="text-end text-success fw-bold">{{ "{:,.3f}".format(t.credit).rstrip('0').rstrip('.') if t.credit > 0 else '---' }}</td>
-                    <td class="text-end pe-4 fw-bold text-white">{{ "{:,.3f}".format(t.balance).rstrip('0').rstrip('.') }}</td>
-                    <td class="text-end pe-4 ledger-actions-cell">
+                    <td class="text-end text-danger fw-bold" data-label="Due Amount">{{ "{:,.3f}".format(t.debit).rstrip('0').rstrip('.') if t.debit > 0 else '---' }}</td>
+                    <td class="text-end text-success fw-bold" data-label="Paid Amount">{{ "{:,.3f}".format(t.credit).rstrip('0').rstrip('.') if t.credit > 0 else '---' }}</td>
+                    <td class="text-end pe-4 fw-bold text-white" data-label="Pending">{{ "{:,.3f}".format(t.balance).rstrip('0').rstrip('.') }}</td>
+                    <td class="text-end pe-4 ledger-actions-cell stack-actions-cell" data-label="Actions">
                         <div class="dropdown d-inline-block">
                             <button class="btn btn-sm btn-outline-light dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                                 Action
@@ -319,7 +319,7 @@ function submitCancelSelection{{ client.id }}() {
                 <span class="badge bg-info text-dark">{{ material_history|length }} Records</span>
             </div>
             <div class="table-responsive">
-                <table class="table table-dark table-hover align-middle mb-0">
+                <table class="table table-dark table-hover align-middle mb-0 table-stack-cards">
                     <thead style="background: #020617;">
                         <tr>
                             <th class="ps-3">Date</th>
@@ -334,14 +334,14 @@ function submitCancelSelection{{ client.id }}() {
                     <tbody>
                         {% for material_name, items in material_history_grouped.items() %}
                         <tr style="background: #0b1220; border-top: 2px solid #334155; border-bottom: 1px solid #334155;">
-                            <td class="ps-3 py-2 fw-bold text-info" colspan="7">
+                            <td class="ps-3 py-2 fw-bold text-info stack-card-heading" colspan="7">
                                 Material: {{ material_name }} <span class="text-white-50">({{ items|length }} rows)</span>
                             </td>
                         </tr>
                             {% for m in items %}
                             <tr style="border-bottom: 1px solid #334155;">
-                                <td class="ps-3 small">{{ m.date }}</td>
-                                <td>
+                                <td class="ps-3 small" data-label="Date">{{ m.date }}</td>
+                                <td data-label="Bill #">
                                     {% if m.bill_no %}
                                     <a href="{{ url_for('view_bill', bill_no=m.bill_no|replace('#', '%23')) }}" class="badge bg-dark border border-secondary text-warning text-decoration-none">{{ m.bill_no }}</a>
                                     {% else %}
@@ -349,7 +349,7 @@ function submitCancelSelection{{ client.id }}() {
                                     {% endif %}
                                     <br><small class="text-white-50">{{ m.nimbus_no or '' }}</small>
                                 </td>
-                                <td class="fw-bold">
+                                <td class="fw-bold" data-label="Material">
                                     {{ m.material_display or m.material }}
                                     {% if m.type == 'Cancel' or m.nimbus_no == 'Booking Cancel' %}
                                     <span class="badge bg-danger ms-2">CANCELLED</span>
@@ -358,15 +358,15 @@ function submitCancelSelection{{ client.id }}() {
                                     {% endif %}
                                 </td>
                                 {% if m.type == 'Cancel' or m.nimbus_no == 'Booking Cancel' %}
-                                <td class="text-end text-warning fw-bold">booking cancelled</td>
-                                <td class="text-end text-warning fw-bold">{{ "{:,.3f}".format(m.qty_dispatched or 0).rstrip('0').rstrip('.') if m.qty_dispatched > 0 else '---' }}</td>
-                                <td class="text-end pe-3 fw-bold text-info">{{ "{:,.3f}".format(m.balance or 0).rstrip('0').rstrip('.') }}</td>
+                                <td class="text-end text-warning fw-bold" data-label="Qty Added">booking cancelled</td>
+                                <td class="text-end text-warning fw-bold" data-label="Dispatched">{{ "{:,.3f}".format(m.qty_dispatched or 0).rstrip('0').rstrip('.') if m.qty_dispatched > 0 else '---' }}</td>
+                                <td class="text-end pe-3 fw-bold text-info" data-label="Total Remaining">{{ "{:,.3f}".format(m.balance or 0).rstrip('0').rstrip('.') }}</td>
                                 {% else %}
-                                <td class="text-end text-success fw-bold">{{ "{:,.3f}".format(m.qty_added or 0).rstrip('0').rstrip('.') if m.qty_added > 0 else '---' }}</td>
-                                <td class="text-end text-danger fw-bold">{{ "{:,.3f}".format(m.qty_dispatched or 0).rstrip('0').rstrip('.') if m.qty_dispatched > 0 else '---' }}</td>
-                                <td class="text-end pe-3 fw-bold text-info">{{ "{:,.3f}".format(m.balance or 0).rstrip('0').rstrip('.') }}</td>
+                                <td class="text-end text-success fw-bold" data-label="Qty Added">{{ "{:,.3f}".format(m.qty_added or 0).rstrip('0').rstrip('.') if m.qty_added > 0 else '---' }}</td>
+                                <td class="text-end text-danger fw-bold" data-label="Dispatched">{{ "{:,.3f}".format(m.qty_dispatched or 0).rstrip('0').rstrip('.') if m.qty_dispatched > 0 else '---' }}</td>
+                                <td class="text-end pe-3 fw-bold text-info" data-label="Total Remaining">{{ "{:,.3f}".format(m.balance or 0).rstrip('0').rstrip('.') }}</td>
                                 {% endif %}
-                                <td class="text-end pe-3">
+                                <td class="text-end pe-3 stack-actions-cell" data-label="Actions">
                                     {% if m.source_type == 'Booking' and m.source_id %}
                                     <a href="{{ url_for('view_bill_detail', type='Booking', id=m.source_id) }}" class="btn btn-sm btn-outline-info me-1" title="View"><i class="bi bi-eye"></i></a>
                                     <form action="{{ url_for('delete_transaction', type='Booking', id=m.source_id) }}" method="POST" class="d-inline" onsubmit="return confirm('Permanently delete this booking?');">
@@ -408,7 +408,7 @@ function submitCancelSelection{{ client.id }}() {
                 <span class="badge bg-warning text-dark">{{ pending_bills|length }} Records</span>
             </div>
             <div class="table-responsive">
-                <table class="table table-dark table-hover align-middle mb-0">
+                <table class="table table-dark table-hover align-middle mb-0 table-stack-cards">
                     <thead style="background: #020617;">
                         <tr>
                             <th class="ps-3">Bill #</th>
@@ -420,20 +420,20 @@ function submitCancelSelection{{ client.id }}() {
                     <tbody>
                         {% for b in pending_bills %}
                         <tr style="border-bottom: 1px solid #334155;">
-                            <td class="ps-3 fw-bold">
+                            <td class="ps-3 fw-bold" data-label="Bill #">
                                 {% if b.bill_no %}
                                 <a href="{{ url_for('view_bill', bill_no=b.bill_no|replace('#', '%23')) }}" class="text-warning text-decoration-none">{{ b.bill_no }}</a>
                                 {% endif %}
                             </td>
-                            <td class="text-end text-danger fw-bold">{{ "{:,.0f}".format(b.amount) }}</td>
-                            <td>
+                            <td class="text-end text-danger fw-bold" data-label="Amount">{{ "{:,.0f}".format(b.amount) }}</td>
+                            <td data-label="Status">
                                 {% if b.is_paid %}
                                 <span class="badge bg-success">Paid</span>
                                 {% else %}
                                 <span class="badge bg-danger">Pending</span>
                                 {% endif %}
                             </td>
-                            <td class="pe-3 small text-white-50" title="{{ b.reason }}">{{ b.reason[:50] }}{% if b.reason|length > 50 %}...{% endif %}</td>
+                            <td class="pe-3 small text-white-50" data-label="Reason" title="{{ b.reason }}">{{ b.reason[:50] }}{% if b.reason|length > 50 %}...{% endif %}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -694,6 +694,28 @@ function submitCancelSelection{{ client.id }}() {
 .financial-ledger-table .action-item-print:hover,
 .financial-ledger-table .action-item-void:hover {
     filter: brightness(1.08);
+}
+
+/* Mobile: readable, full-width ledger instead of a crushed fixed table. */
+@media (max-width: 767.98px) {
+    .financial-ledger-table .ledger-date-cell .ledger-date-main {
+        font-size: 0.95rem;
+    }
+    .financial-ledger-table .ledger-date-cell .ledger-date-sub {
+        font-size: 0.82rem;
+        margin-top: 2px;
+    }
+    .financial-ledger-table td {
+        font-size: 0.95rem;
+    }
+}
+
+/* Tablet / small desktop: keep the fixed financial table readable by letting
+   it scroll horizontally instead of crushing seven columns together. */
+@media (min-width: 768px) and (max-width: 1199.98px) {
+    .financial-ledger-table {
+        min-width: 780px;
+    }
 }
 
 @media print {

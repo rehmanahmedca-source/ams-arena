@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
     <div>
         <h2 class="fw-bold text-white mb-0">
             {% if type == 'cash' %}
@@ -62,7 +62,7 @@
 
 <div class="card border-0 shadow-sm" style="background: #1e293b; border: 2px solid #475569 !important; border-radius: 15px;">
     <div class="table-responsive">
-        <table class="table table-dark table-hover align-middle mb-0 financial-details-table">
+        <table class="table table-dark table-hover align-middle mb-0 financial-details-table table-stack-cards">
             <thead style="background: #0f172a;">
                 <tr>
                     <th class="ps-4 py-3 text-white-50 fd-col-date">Date</th>
@@ -75,30 +75,30 @@
             <tbody style="background: #1e293b;">
                 {% for t in transactions %}
                 <tr style="border-bottom: 1px solid #334155;">
-                    <td class="ps-4 py-3 fd-date-cell">
+                    <td class="ps-4 py-3 fd-date-cell" data-label="Date">
                         <div class="fd-date-main">{{ t.date.strftime('%Y-%m-%d') if t.date else '' }}</div>
                         <div class="fd-date-sub">{{ t.date.strftime('%H:%M') if t.date and t.date.strftime is defined else '' }}</div>
                     </td>
-                    <td class="fw-bold text-white">{{ t.client }}</td>
-                    <td>
+                    <td class="fw-bold text-white" data-label="Client">{{ t.client }}</td>
+                    <td data-label="Type">
                         <span class="badge bg-opacity-10 {{ 'bg-success text-success' if type == 'cash' else 'bg-warning text-warning' }} px-3 py-2 rounded-pill">
                             {{ t.type }}
                         </span>
                     </td>
-                    <td class="text-white-50 fd-ref-cell">{{ t.ref }}</td>
-                    <td class="text-end pe-4 fw-bold fs-5 {{ 'text-success' if type == 'cash' else 'text-danger' }}">
+                    <td class="text-white-50 fd-ref-cell" data-label="Reference">{{ t.ref }}</td>
+                    <td class="text-end pe-4 fw-bold fs-5 {{ 'text-success' if type == 'cash' else 'text-danger' }}" data-label="Amount">
                         Rs. {{ "{:,.0f}".format(t.amount) }}
                     </td>
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="5" class="text-center py-5 text-white-50">No transactions found for the selected criteria.</td>
+                    <td colspan="5" class="text-center py-5 text-white-50 stack-no-label">No transactions found for the selected criteria.</td>
                 </tr>
                 {% endfor %}
             </tbody>
             <tfoot style="background: #0f172a;">
                 <tr>
-                    <td colspan="4" class="text-end py-3 fw-bold text-white">TOTAL</td>
+                    <td colspan="4" class="text-end py-3 fw-bold text-white stack-no-label">TOTAL</td>
                     <td class="text-end pe-4 fw-bold fs-4 text-white">
                         {% set total = transactions|sum(attribute='amount') %}
                         Rs. {{ "{:,.0f}".format(total) }}
@@ -135,6 +135,24 @@
     overflow-wrap: anywhere;
     word-break: break-word;
     line-height: 1.2;
+}
+
+/* Tablet / small desktop: let the fixed columns scroll instead of crushing. */
+@media (min-width: 768px) and (max-width: 1199.98px) {
+    .financial-details-table {
+        min-width: 720px;
+    }
+}
+
+/* Mobile: readable date text inside the stacked cards. */
+@media (max-width: 767.98px) {
+    .financial-details-table .fd-date-main {
+        font-size: 0.95rem;
+    }
+    .financial-details-table .fd-date-sub {
+        font-size: 0.82rem;
+        margin-top: 2px;
+    }
 }
 </style>
 {% endblock %}
