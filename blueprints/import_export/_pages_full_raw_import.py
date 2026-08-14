@@ -1,27 +1,33 @@
 """pages — split from import_export.py."""
 from ._common import *  # noqa
 
+
+def _full_raw_reject(message, category='danger'):
+    """Return JSON for fetch/JSON clients, otherwise flash + redirect."""
+    from blueprints.import_export._pages_transfer_import import _wants_import_json, _import_result_payload
+    if _wants_import_json():
+        return jsonify(_import_result_payload(False, message, {})), 400
+    flash(message, category)
+    return redirect(url_for('import_export.import_export_page'))
+
+
 @import_export_bp.route('/full_raw_import', methods=['POST'])
 @login_required
 def full_raw_import():
     # ===== PANDAS DEPENDENCY CHECK =====
     if not _validate_pandas_installed():
-        flash('CRITICAL: pandas library is not installed. Run: pip install pandas>=2.3.3', 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject('CRITICAL: pandas library is not installed. Run: pip install pandas>=2.3.3')
     # ===== END DEPENDENCY CHECK =====
     
     if not _full_raw_import_enabled():
-        flash('Full raw import is disabled by safety toggle.', 'warning')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject('Full raw import is disabled by safety toggle.', 'warning')
 
     if current_user.role not in ['admin', 'root']:
-        flash('Only admin or root can run full raw import.', 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject('Only admin or root can run full raw import.')
 
     file = request.files.get('file')
     if not file:
-        flash('No file uploaded for full raw import.', 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject('No file uploaded for full raw import.')
 
     mode = (request.form.get('mode') or 'append').strip().lower()
     if mode not in ['append', 'replace_tenant_data']:
@@ -32,11 +38,9 @@ def full_raw_import():
             tenant_id_raw=request.form.get('tenant_id'),
         )
     except ValueError as e:
-        flash(str(e), 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject(str(e))
     if scope_ctx.get('scope') == 'all_tenants' and mode == 'replace_tenant_data':
-        flash('Replace mode is blocked for all-tenants scope. Use append mode.', 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject('Replace mode is blocked for all-tenants scope. Use append mode.')
 
     try:
         file_bytes = file.read()
@@ -44,8 +48,7 @@ def full_raw_import():
             file.stream.seek(0)
         _archive_artifact_bytes(file_bytes, f"full_raw_import_{file.filename}", kind='imports')
     except Exception as e:
-        flash(f'Invalid Excel file: {e}', 'danger')
-        return redirect(url_for('import_export.import_export_page'))
+        return _full_raw_reject(f'Invalid Excel file: {e}')
 
     report_name = None
     try:
