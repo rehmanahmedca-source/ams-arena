@@ -8,7 +8,6 @@ import json
 import calendar
 import threading
 import time
-import smtplib
 import shutil
 import sqlite3
 import zipfile
@@ -20,7 +19,6 @@ import importlib
 from itertools import zip_longest
 from urllib.parse import unquote
 from contextlib import redirect_stderr
-from email.message import EmailMessage
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -62,9 +60,6 @@ from app.services.ledgers import (
 )
 from app.services.lookups import (
     get_client_by_input,
-)
-from app.services.notify import (
-    _smtp_send_attachments_to,
 )
 from app.services.sales_core import (
     _direct_sale_bill_refs,
@@ -260,32 +255,19 @@ def _send_hourly_all_tenants_backup_email(trigger_type='auto-hourly', force_send
     zip_bytes = b''
     try:
         zip_name, zip_path, zip_bytes = _build_root_backup_zip(settings_row=settings_row)
-        ts = pk_now().strftime('%Y-%m-%d %H:%M')
-        subject_prefix = (settings_row.subject_prefix or 'PWARE Root Backup').strip()
-        subject = f"{subject_prefix} - {ts}"
-        body = (
-            "Attached is the automatic backup ZIP.\n"
-            f"Generated at: {pk_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"DB source: {db_path}"
-        )
-        ok, msg = _smtp_send_attachments_to(
-            recipients,
-            subject,
-            body,
-            [(zip_name, 'application/zip', zip_bytes)]
-        )
+        msg = 'Email delivery removed from this build. Backup saved locally only.'
         _log_root_backup_history(
             settings_row=settings_row,
             trigger_type=trigger_type,
-            status=('sent' if ok else 'failed'),
+            status='skipped',
             recipients=recipients,
-            subject=subject,
+            subject=(settings_row.subject_prefix or 'PWARE Root Backup').strip(),
             attachment_name=zip_name,
             attachment_size_bytes=len(zip_bytes or b''),
             backup_path=zip_path,
             message=msg
         )
-        return ok, msg
+        return False, msg
     except Exception as e:
         try:
             _log_root_backup_history(

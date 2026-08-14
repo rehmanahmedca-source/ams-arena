@@ -105,6 +105,10 @@ def _user_can(permission_name):
     return bool(val)
 
 
+def _can_manage_categories():
+    return current_user.is_authenticated and _user_can('can_manage_materials')
+
+
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 

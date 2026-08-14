@@ -334,11 +334,4 @@ def notifications_ack_reminder(id):
     return jsonify({'success': True})
 
 
-@bp.route('/notifications/send_daily_now', methods=['POST'])
-@login_required
-def notifications_send_daily_now():
-    ok, msg = _send_daily_notifications_email()
-    flash(msg, 'success' if ok else 'warning')
-    return redirect(url_for('notifications_page'))
-
 

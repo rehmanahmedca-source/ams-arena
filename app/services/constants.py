@@ -7,8 +7,6 @@ import secrets
 import json
 import calendar
 import threading
-import time
-import smtplib
 import shutil
 import sqlite3
 import zipfile
@@ -20,7 +18,6 @@ import importlib
 from itertools import zip_longest
 from urllib.parse import unquote
 from contextlib import redirect_stderr
-from email.message import EmailMessage
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -50,19 +47,11 @@ OPEN_KHATA_CODE = 'OPEN-KHATA'
 
 OPEN_KHATA_NAME = 'OPEN KHATA'
 
-_NOTIFY_WORKER_STARTED = False
-
-_NOTIFY_LAST_SENT_DATE = None
-
 _HOURLY_BACKUP_WORKER_STARTED = False
 
 _HOURLY_BACKUP_LAST_SLOT = None
 
 _RECON_WORKER_STARTED = False
-
-AMS_ASSISTANT_EXPORT_CACHE = {}
-
-AMS_ASSISTANT_CONTEXT_CACHE = {}
 
 PK_TZ = ZoneInfo('Asia/Karachi')
 
@@ -257,9 +246,6 @@ ENDPOINT_PERMISSION_MAP = {
     'financial_details': 'can_view_reports',
     'profit_reports': 'can_view_reports',
     'mixed_transactions': 'can_view_reports',
-    'ams_assistant_page': 'can_view_reports',
-    'ams_assistant_chat_api': 'can_view_reports',
-    'ams_assistant_export_api': 'can_view_reports',
     'notifications_page': 'can_manage_notifications',
     'notifications_upcoming': 'can_manage_notifications',
     'notifications_add_email': 'can_manage_notifications',
@@ -273,7 +259,6 @@ ENDPOINT_PERMISSION_MAP = {
     'api_notifications_contact_history': 'can_manage_notifications',
     'notifications_ack_reminder': 'can_manage_notifications',
     'api_notifications_due': 'can_manage_notifications',
-    'notifications_send_daily_now': 'can_manage_notifications',
     'settings': 'can_access_settings',
     'activity_log_page': 'can_access_settings',
     'change_password': 'can_access_settings',

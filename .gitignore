@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database & runtime artifacts
+instance/ahmed_cement.db
+instance/ahmed_cement.db-journal
+instance/secret_key
+instance/import_uploads/
+instance/root_hourly_backups/
+
+# Workspace artifacts
+workspace-*.zip
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

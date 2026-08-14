@@ -8,7 +8,6 @@ def register_hooks(app):
     from flask import jsonify, flash, redirect, url_for, session
     from flask_login import current_user
     from models import Client, Material, DeliveryPerson, Settings
-    from app.services.notify import _start_notification_worker
     from app.services.backup import _start_hourly_backup_worker, _start_reconcile_worker
     from app.services.permissions import _user_can
     from app.services.constants import _AUTO_BACKUP_ENABLED, ENDPOINT_PERMISSION_MAP
@@ -150,8 +149,7 @@ def register_hooks(app):
         return response
 
     @app.before_request
-    def _ensure_notify_worker_started():
-        _start_notification_worker()
+    def _ensure_background_workers_started():
         if _AUTO_BACKUP_ENABLED:
             _start_hourly_backup_worker()
         _start_reconcile_worker()

@@ -519,9 +519,6 @@
                 <a href="/profit_reports" class="nav-link {{ 'active' if request.path == '/profit_reports' }}" onclick="closeSidebar()">
                     <i class="bi bi-bar-chart-line"></i> Profit Reports
                 </a>
-                <a href="/ams_assistant" class="nav-link {{ 'active' if request.path == '/ams_assistant' }}" onclick="closeSidebar()">
-                    <i class="bi bi-robot"></i> AMS Assistant
-                </a>
                 {% endif %}
                 {% if current_user.can_manage_notifications or current_user.role == 'admin' %}
                 <a href="/notifications" class="nav-link {{ 'active' if request.path == '/notifications' }}" onclick="closeSidebar()">

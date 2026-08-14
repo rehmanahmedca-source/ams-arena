@@ -36,65 +36,6 @@
                         </div>
                     </div>
                     <hr class="border-secondary my-2">
-                    <h6 class="small fw-bold text-warning text-uppercase mb-2">SMTP (Gmail App Password)</h6>
-                    <div class="row g-2">
-                        <div class="col-md-6 mb-2">
-                            <label class="form-label small text-white-50">SMTP Host</label>
-                            <input type="text" name="smtp_host" class="form-control form-control-sm bg-dark text-white border-secondary" value="{{ settings.smtp_host or 'smtp.gmail.com' }}">
-                        </div>
-                        <div class="col-md-6 mb-2">
-                            <label class="form-label small text-white-50">SMTP Port</label>
-                            <input type="number" name="smtp_port" class="form-control form-control-sm bg-dark text-white border-secondary" value="{{ settings.smtp_port or 587 }}">
-                        </div>
-                        <div class="col-md-6 mb-2">
-                            <label class="form-label small text-white-50">SMTP User (Gmail)</label>
-                            <input type="email" name="smtp_user" class="form-control form-control-sm bg-dark text-white border-secondary" value="{{ settings.smtp_user or '' }}">
-                        </div>
-                        <div class="col-md-6 mb-2">
-                            <label class="form-label small text-white-50">SMTP From</label>
-                            <input type="email" name="smtp_from" class="form-control form-control-sm bg-dark text-white border-secondary" value="{{ settings.smtp_from or '' }}" placeholder="sender email">
-                        </div>
-                        <div class="col-md-6 mb-2">
-                            <label class="form-label small text-white-50">SMTP App Password</label>
-                            <input type="password" name="smtp_pass" class="form-control form-control-sm bg-dark text-white border-secondary" placeholder="{% if settings.smtp_pass %}Saved (hidden). Enter new one to replace{% else %}Enter 16-char app password{% endif %}">
-                            <div class="d-flex justify-content-between mt-1">
-                                <small class="text-white-50">
-                                    {% if settings.smtp_pass %}Password is saved in system (hidden for security){% else %}No password saved{% endif %}
-                                </small>
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" value="1" id="clearSmtpPass" name="clear_smtp_pass">
-                                    <label class="form-check-label text-white-50 small" for="clearSmtpPass">Clear saved</label>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-3 mb-2">
-                            <label class="form-label small text-white-50">Daily Notify Time</label>
-                            <input type="time" name="notify_daily_time" class="form-control form-control-sm bg-dark text-white border-secondary" value="{{ settings.notify_daily_time or '08:00' }}">
-                        </div>
-                        <div class="col-md-3 mb-2 d-flex align-items-end">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" role="switch" name="smtp_use_tls" id="smtpUseTls" {% if settings.smtp_use_tls or settings.smtp_use_tls is none %}checked{% endif %}>
-                                <label class="form-check-label text-white-50 small" for="smtpUseTls">Use TLS</label>
-                            </div>
-                        </div>
-                    </div>
-                    <small class="text-white-50">For Gmail, enable 2-Step Verification and use an App Password.</small>
-                    <hr class="border-secondary my-2">
-                    <h6 class="small fw-bold text-warning text-uppercase mb-2">AMS Assistant AI</h6>
-                    <div class="row g-2">
-                        <div class="col-md-8 mb-2">
-                            <label class="form-label small text-white-50">OpenAI API Key</label>
-                            <input type="password" name="ams_openai_api_key" class="form-control form-control-sm bg-dark text-white border-secondary" placeholder="{% if settings.ams_openai_api_key %}Saved (hidden). Enter new key to replace{% else %}Enter API key{% endif %}">
-                            <small class="text-white-50">{% if settings.ams_openai_api_key %}API key is saved in system (hidden for security){% else %}No API key saved{% endif %}</small>
-                        </div>
-                        <div class="col-md-4 mb-2 d-flex align-items-end">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" value="1" id="clearAmsKey" name="clear_ams_openai_api_key">
-                                <label class="form-check-label text-white-50 small" for="clearAmsKey">Clear saved key</label>
-                            </div>
-                        </div>
-                    </div>
-                    <hr class="border-secondary my-2">
                     <div class="form-check form-switch mb-3"><input class="form-check-input" type="checkbox" role="switch" name="allow_global_negative_stock" id="globalNegativeStock" {% if settings.allow_global_negative_stock %}checked{% endif %}><label class="form-check-label text-danger small" for="globalNegativeStock">Always Allow Negative Stock</label></div>
                     <button type="submit" class="btn btn-primary btn-sm w-100 fw-bold">Save General Settings</button>
                 </form>
