@@ -182,7 +182,11 @@ def _run_full_raw_import_bytes(file_bytes, scope_ctx, mode, source_file_name):
             selected_tables.append(t)
 
     if not selected_tables:
-        raise ValueError('No importable sheets found for current scope.')
+        raise ValueError(
+            'No importable sheets found for current scope. The file does not look like an '
+            'export from this app — use "Export Full XLSX" on the Import & Export page to '
+            'create a compatible backup, then import that file.'
+        )
 
     report = {'inserted': 0, 'skipped': 0, 'tables': len(selected_tables), 'table_results': [], 'users': []}
     report_name = None

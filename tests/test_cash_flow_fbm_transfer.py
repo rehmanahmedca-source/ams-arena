@@ -1,5 +1,15 @@
 import pytest
+import os
+import tempfile
 from datetime import date
+
+# Isolate this module-level app from the real production database.
+os.environ.setdefault("ALLOW_EMPTY_DB", "1")
+os.environ.setdefault("ALLOW_DB_DROP", "1")
+os.environ.setdefault(
+    "APP_DB_PATH",
+    os.path.join(tempfile.gettempdir(), "ams_cash_flow_fbm_transfer_test.db"),
+)
 
 from app import create_app
 from models import db

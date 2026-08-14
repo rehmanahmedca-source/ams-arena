@@ -27,18 +27,29 @@ def _import_result_payload(ok, headline, report, extra=None):
     return payload
 
 
+def _json_import_error(msg, status=400):
+    """Return a JSON error payload for fetch-driven import clients."""
+    return jsonify(_import_result_payload(False, msg, {})), status
+
+
 @import_export_bp.route('/transfer/import', methods=['POST'])
 @login_required
 def transfer_import():
     # ===== PANDAS DEPENDENCY CHECK =====
     if not _validate_pandas_installed():
-        flash('CRITICAL: pandas library is not installed. Run: pip install pandas>=2.3.3', 'danger')
+        msg = 'CRITICAL: pandas library is not installed. Run: pip install pandas>=2.3.3'
+        if _wants_import_json():
+            return _json_import_error(msg, 500)
+        flash(msg, 'danger')
         return redirect(url_for('import_export.import_export_page'))
     # ===== END DEPENDENCY CHECK =====
     
     file = request.files.get('file')
     if not file:
-        flash('Please upload an Excel file.', 'danger')
+        msg = 'Please upload an Excel file.'
+        if _wants_import_json():
+            return _json_import_error(msg, 400)
+        flash(msg, 'danger')
         return redirect(url_for('import_export.import_export_page'))
 
     try:
@@ -47,7 +58,10 @@ def transfer_import():
             tenant_id_raw=request.form.get('tenant_id'),
         )
     except ValueError as e:
-        flash(str(e), 'danger')
+        msg = str(e)
+        if _wants_import_json():
+            return _json_import_error(msg, 400)
+        flash(msg, 'danger')
         return redirect(url_for('import_export.import_export_page'))
 
     sections = [str(x).strip().lower() for x in request.form.getlist('sections') if str(x).strip()]
@@ -60,26 +74,36 @@ def transfer_import():
             file.stream.seek(0)
         _archive_artifact_bytes(file_bytes, f"transfer_import_{file.filename}", kind='imports')
     except Exception as e:
-        flash(f'Invalid file: {e}', 'danger')
+        msg = f'Invalid file: {e}'
+        if _wants_import_json():
+            return _json_import_error(msg, 400)
+        flash(msg, 'danger')
         return redirect(url_for('import_export.import_export_page'))
 
+    notes = []
     detected_kind = _detect_transfer_workbook_kind(file_bytes)
     if detected_kind == 'literal_all' and 'literal_all' not in sections:
         sections = ['literal_all']
-        flash('Detected Literal Full Raw workbook. Switched import mode automatically.', 'info')
+        notes.append('Detected Literal Full Raw workbook. Switched import mode automatically.')
     elif detected_kind == 'all_business' and 'literal_all' in sections and 'all_business' not in sections:
         sections = ['all_business']
-        flash('Detected Master Backup workbook. Switched import mode automatically.', 'info')
+        notes.append('Detected Master Backup workbook. Switched import mode automatically.')
 
     if 'literal_all' in sections:
         if not _full_raw_import_enabled():
-            flash('Literal Full Import is disabled by safety toggle.', 'warning')
+            msg = 'Literal Full Import is disabled by safety toggle.'
+            if _wants_import_json():
+                return _json_import_error(msg, 400)
+            flash(msg, 'warning')
             return redirect(url_for('import_export.import_export_page'))
         mode = (request.form.get('mode') or 'append').strip().lower()
         if mode not in ['append', 'replace_tenant_data']:
             mode = 'append'
         if scope_ctx.get('scope') == 'all_tenants' and mode == 'replace_tenant_data':
-            flash('Replace mode is blocked for all-tenants scope. Use append mode.', 'danger')
+            msg = 'Replace mode is blocked for all-tenants scope. Use append mode.'
+            if _wants_import_json():
+                return _json_import_error(msg, 400)
+            flash(msg, 'danger')
             return redirect(url_for('import_export.import_export_page'))
         try:
             report, report_name = _run_full_raw_import_bytes(
@@ -88,19 +112,31 @@ def transfer_import():
                 mode=mode,
                 source_file_name=file.filename,
             )
-            flash(
+            msg = (
                 f"Literal full import complete ({mode}). Inserted: {report['inserted']}, "
-                f"Skipped: {report['skipped']}, Tables: {report['tables']}",
-                'success'
+                f"Skipped: {report['skipped']}, Tables: {report['tables']}"
             )
+            if notes:
+                msg = msg + ' ' + ' '.join(notes)
+            if _wants_import_json():
+                return jsonify(_import_result_payload(True, msg, report, {'report_name': report_name}))
+            for note in notes:
+                flash(note, 'info')
+            flash(msg, 'success')
             return redirect(url_for('import_export.import_export_page', full_raw_import_report=report_name))
         except Exception as e:
             db.session.rollback()
-            flash(f'Literal full import failed: {e}', 'danger')
+            msg = f'Literal full import failed: {e}'
+            if _wants_import_json():
+                return _json_import_error(msg, 400)
+            flash(msg, 'danger')
             return redirect(url_for('import_export.import_export_page'))
 
     if getattr(current_user, 'role', None) == 'root' and scope_ctx.get('scope') == 'all_tenants':
-        flash('Root all-tenant master import is blocked. Use Literal Full Import for all-tenant restore.', 'danger')
+        msg = 'Root all-tenant master import is blocked. Use Literal Full Import for all-tenant restore.'
+        if _wants_import_json():
+            return _json_import_error(msg, 400)
+        flash(msg, 'danger')
         return redirect(url_for('import_export.import_export_page'))
 
     try:
@@ -108,7 +144,10 @@ def transfer_import():
         if 'all_business' not in sections:
             sheet_names = _selected_master_sheets(sections)
             if not sheet_names:
-                flash('Select at least one section for import.', 'warning')
+                msg = 'Select at least one section for import.'
+                if _wants_import_json():
+                    return _json_import_error(msg, 400)
+                flash(msg, 'warning')
                 return redirect(url_for('import_export.import_export_page'))
             run_bytes = _filter_excel_bytes_to_sheets(file_bytes, sheet_names)
 
@@ -128,8 +167,12 @@ def transfer_import():
             f"Import complete. Imported: {report.get('imported', 0)}, "
             f"Updated: {report.get('updated', 0)}, Skipped: {report.get('skipped', 0)}."
         )
+        if notes:
+            msg = msg + ' ' + ' '.join(notes)
         if _wants_import_json():
             return jsonify(_import_result_payload(True, msg, report))
+        for note in notes:
+            flash(note, 'info')
         flash(msg, 'success')
     except Exception as e:
         db.session.rollback()
