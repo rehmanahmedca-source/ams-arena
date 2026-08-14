@@ -143,6 +143,25 @@ def delete_user(id):
     return redirect(url_for('settings'))
 
 
+@bp.route('/toggle_user_status/<int:id>', methods=['POST'])
+@login_required
+def toggle_user_status(id):
+    if current_user.role != 'admin':
+        flash('Unauthorized', 'danger')
+        return redirect(url_for('settings'))
+    u = db.session.get(User, id)
+    if u and u.role != 'root' and (u.username or '').strip().lower() != 'admin':
+        if u.id == current_user.id:
+            flash('You cannot change your own status.', 'danger')
+            return redirect(url_for('settings'))
+        current_status = (u.status or 'active').strip().lower()
+        u.status = 'inactive' if current_status == 'active' else 'active'
+        db.session.commit()
+        action = 'suspended' if u.status == 'inactive' else 'activated'
+        flash(f'User {u.username} {action}.', 'success')
+    return redirect(url_for('settings'))
+
+
 @bp.route('/update_settings', methods=['POST'])
 @login_required
 def update_settings():

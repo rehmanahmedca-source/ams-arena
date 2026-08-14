@@ -8,9 +8,6 @@
             <span class="badge bg-warning text-dark ms-1">{{ reminders|length }}</span>
         </a>
         <button type="button" class="btn btn-outline-warning btn-sm fw-bold" onclick="testAlarm()"><i class="bi bi-volume-up me-1"></i>Test Alarm</button>
-        <form method="POST" action="{{ url_for('notifications_send_daily_now') }}">
-            <button class="btn btn-outline-info btn-sm fw-bold"><i class="bi bi-envelope me-1"></i>Send Daily PDF Now</button>
-        </form>
     </div>
 </div>
 
