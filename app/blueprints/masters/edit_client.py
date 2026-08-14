@@ -32,7 +32,10 @@ def edit_client(id):
 
             # Propagate name change to all related tables to prevent broken links
             Booking.query.filter_by(client_name=old_name).update({'client_name': new_name})
-            DirectSale.query.filter_by(client_name=old_name).update({'client_name': new_name})
+            DirectSale.query.filter_by(client_name=old_name).update({
+                'client_name': new_name,
+                'client_code': new_code
+            })
             Payment.query.filter_by(client_name=old_name).update({'client_name': new_name})
             WaiveOff.query.filter_by(client_name=old_name).update({
                 'client_name': new_name,

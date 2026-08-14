@@ -1,6 +1,32 @@
 """helpers — split from accounts.py."""
 from ._common import *  # noqa
 
+
+def _grn_has_active_auto_payment(grn):
+    """Return whether a GRN's paid amount is already represented by a payment row.
+
+    New GRNs create a marked ``SupplierPayment`` so that supplier ledgers and
+    account postings have one canonical payment source.  The fallback keeps
+    legacy GRNs (created before that row existed) visible without counting a
+    new GRN twice in dashboards and KPI pages.
+    """
+    if not grn or not getattr(grn, 'id', None):
+        return False
+    marker = f'[AUTO_GRN_PAY:{grn.id}]'
+    return SupplierPayment.query.filter(
+        SupplierPayment.is_void == False,
+        SupplierPayment.note.ilike(f'%{marker}%')
+    ).first() is not None
+
+
+def _legacy_unrepresented_grn_paid_total(grns):
+    return sum(
+        float(getattr(grn, 'paid_amount', 0) or 0)
+        for grn in (grns or [])
+        if not _grn_has_active_auto_payment(grn)
+    )
+
+
 def _normalize_namespace(namespace):
     ns = (namespace or AUTO_BILL_NS_DEFAULT).strip().upper()
     if not ns:
@@ -74,7 +100,7 @@ def _accounts_permission_check():
     if not current_user.is_authenticated:
         return
     role_norm = (getattr(current_user, 'role', '') or '').strip().lower()
-    if role_norm != 'admin' and not getattr(current_user, 'can_manage_payments', False):
+    if role_norm not in ('admin', 'root') and not getattr(current_user, 'can_manage_payments', False):
         from flask import abort
         abort(403)
 
@@ -189,14 +215,20 @@ def _supplier_payable_summary():
     for supplier in suppliers:
         supplier_id = supplier.id
 
-        # Calculate total GRN amounts for this supplier
-        grn_totals = db.session.query(
-            func.sum(GRN.loading_cost + GRN.freight_cost + GRN.other_expense + GRN.tax_amount - GRN.discount - GRN.adjustment_amount).label('costs'),
-            func.sum(GRN.paid_amount).label('paid')
-        ).filter(
+        # Calculate total GRN amounts for this supplier.  The paid portion
+        # comes from SupplierPayment when the GRN has an auto-payment row;
+        # only legacy GRNs without that row use GRN.paid_amount directly.
+        supplier_grns = GRN.query.filter(
             GRN.supplier_id == supplier_id,
             GRN.is_void == False
-        ).first()
+        ).all()
+        grn_costs = sum(
+            float((grn.loading_cost or 0) + (grn.freight_cost or 0) +
+                  (grn.other_expense or 0) + (grn.tax_amount or 0) -
+                  (grn.discount or 0) + (grn.adjustment_amount or 0))
+            for grn in supplier_grns
+        )
+        grn_paid = _legacy_unrepresented_grn_paid_total(supplier_grns)
 
         # Calculate GRN items total
         grn_items_total = db.session.query(func.sum(GRNItem.qty * GRNItem.price_at_time)).filter(
@@ -209,8 +241,6 @@ def _supplier_payable_summary():
             )
         ).scalar() or 0
 
-        grn_costs = float(grn_totals.costs or 0) if grn_totals else 0
-        grn_paid = float(grn_totals.paid or 0) if grn_totals else 0
         total_grn_amount = grn_items_total + grn_costs
 
         # Supplier payments

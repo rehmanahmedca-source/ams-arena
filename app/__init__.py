@@ -160,9 +160,13 @@ def create_app(test_config: dict | None = None) -> Flask:
             from app.services.schema import _bootstrap_database
 
             if app.config.get("TESTING"):
-                from app.services.schema import _ensure_model_columns
+                from app.services.schema import _ensure_default_admin, _ensure_model_columns
                 db.create_all()
                 _ensure_model_columns()
+                # Keep a fresh test database usable in the same way as a fresh
+                # production database.  The smoke tests and local developers
+                # rely on the documented Admin login even when no rows exist.
+                _ensure_default_admin()
             else:
                 _guard_db_file_before_bootstrap()
                 _bootstrap_database()

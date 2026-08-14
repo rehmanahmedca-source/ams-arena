@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path("/home/user")
+ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "SMOKE_TEST_REPORT.md"
 
 GET_PAGES = [
@@ -88,10 +88,11 @@ def main():
                 return c.get(path, follow_redirects=follow)
             return c.post(path, data=data or {}, follow_redirects=follow)
         except Exception as exc:
+            exc_text = f"EXC {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
             class Fake:
                 status_code = 0
                 def get_data(self, as_text=True):
-                    return f"EXC {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+                    return exc_text
             return Fake()
 
     # --- login ---
@@ -424,7 +425,7 @@ def write_report(results, crud):
         lines.append("|---|---|---|")
         for r in rows:
             mark = "PASS" if r["ok"] else "FAIL"
-            det = (r["detail"] or "").replace("|", "/")[:220]
+            det = str(r["detail"] or "").replace("|", "/")[:220]
             lines.append(f"| {mark} | {r['label']} | {det} |")
         lines.append("")
     if crud:

@@ -76,6 +76,17 @@ def test_fbm_drawer_transfer_is_included_and_not_double_counted(client_app, monk
     )
 
     db.session.add_all([tx_in, tx_out, tx_nonfbm, direct_sale, refund_tx])
+    db.session.flush()
+    linked_sale_tx = AccountTransaction(
+        from_account_id=None,
+        to_account_id=source_account.id,
+        amount=11111.0,
+        description='Sale receipt mirror',
+        note=f'[SRC:DirectSale:{direct_sale.id}]',
+        transaction_type='Receipt',
+        date_posted=pk_now(),
+    )
+    db.session.add(linked_sale_tx)
     db.session.commit()
 
     captured = {}
@@ -91,6 +102,14 @@ def test_fbm_drawer_transfer_is_included_and_not_double_counted(client_app, monk
     app.config['LOGIN_DISABLED'] = True
     try:
         with app.test_request_context(f'/cash_flow?from_date={today}&to_date={today}'):
+            # Cash Flow deliberately hides rows created before the user's
+            # fresh-start cutoff.  Set the cutoff before invoking the view so
+            # this isolated test exercises the rows it just created.
+            from flask import session
+            session['cash_flow_fresh_start_cutoff'] = {
+                'date': today,
+                'at': '2000-01-01 00:00:00',
+            }
             response = cash_flow()
     finally:
         app.config['LOGIN_DISABLED'] = False
@@ -106,6 +125,7 @@ def test_fbm_drawer_transfer_is_included_and_not_double_counted(client_app, monk
     assert f'TX-{tx_nonfbm.id}' not in references, 'Non-FBM transfer should not affect cash flow.'
     assert any('Cash Flow Sale Test' in desc for desc in descriptions), 'Existing cash sale must still appear in cash flow.'
     assert any('Refund Flow Test' in desc for desc in descriptions), 'Existing refund payment must still appear in cash flow.'
+    assert f'TX-{linked_sale_tx.id}' not in references, 'Direct-sale AccountTransaction mirror must not duplicate the sale row.'
 
     assert sum(row['cash_in'] for row in rows if row['reference'] == f'TX-{tx_in.id}') == 60000.0
     assert sum(row['cash_out'] for row in rows if row['reference'] == f'TX-{tx_out.id}') == 50000.0

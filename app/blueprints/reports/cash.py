@@ -429,7 +429,16 @@ def cash_flow():
 
     def _is_derived_account_tx(tx):
         n = _tx_note(tx).upper()
-        return '[SRC:PAYMENT:' in n or '[SRC:SUPPLIERPAYMENT:' in n or '[SRC:CLIENTREFUND:' in n
+        # Source-document receipts/payments are rendered from their source
+        # tables above.  Including these AccountTransaction mirrors would
+        # show the same cash movement twice in Cash Flow.
+        return any(marker in n for marker in (
+            '[SRC:BOOKING:',
+            '[SRC:DIRECTSALE:',
+            '[SRC:PAYMENT:',
+            '[SRC:SUPPLIERPAYMENT:',
+            '[SRC:CLIENTREFUND:',
+        ))
 
     for tx in account_tx_query.all():
         note_u = _tx_note(tx).upper()

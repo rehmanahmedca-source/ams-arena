@@ -163,7 +163,13 @@ def register_hooks(app):
         if current_user.role in ('admin', 'root'):
             return None
         endpoint = request.endpoint or ''
+        # Core blueprints are registered before the legacy short aliases, so
+        # Flask normally reports endpoints such as ``sales.add_booking`` while
+        # the permission table historically used the short name.  Falling
+        # back to the final component keeps both route forms protected.
         needed = ENDPOINT_PERMISSION_MAP.get(endpoint)
+        if not needed and '.' in endpoint:
+            needed = ENDPOINT_PERMISSION_MAP.get(endpoint.rsplit('.', 1)[-1])
         if not needed:
             return None
         if _user_can(needed):

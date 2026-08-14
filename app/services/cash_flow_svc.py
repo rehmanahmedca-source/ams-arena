@@ -149,7 +149,13 @@ def _cash_flow_net_between(start_date=None, end_date=None):
             continue
 
         note_u = (tx.note or '').upper()
-        if '[SRC:PAYMENT:' in note_u or '[SRC:SUPPLIERPAYMENT:' in note_u:
+        if any(marker in note_u for marker in (
+            '[SRC:BOOKING:',
+            '[SRC:DIRECTSALE:',
+            '[SRC:PAYMENT:',
+            '[SRC:SUPPLIERPAYMENT:',
+            '[SRC:CLIENTREFUND:',
+        )):
             continue
         if tx.transaction_type == 'Receipt' and tx.to_account_id is not None:
             if tx.to_account_id not in account_cache:
@@ -229,7 +235,13 @@ def _cash_flow_in_out_between(start_date, end_date):
     ).all():
         amount = float(tx.amount or 0)
         note_u = (tx.note or '').upper()
-        if '[SRC:PAYMENT:' in note_u or '[SRC:SUPPLIERPAYMENT:' in note_u:
+        if any(marker in note_u for marker in (
+            '[SRC:BOOKING:',
+            '[SRC:DIRECTSALE:',
+            '[SRC:PAYMENT:',
+            '[SRC:SUPPLIERPAYMENT:',
+            '[SRC:CLIENTREFUND:',
+        )):
             continue
         if tx.transaction_type == 'Transfer' and fbm_drawer_account_id is not None:
             if tx.to_account_id == fbm_drawer_account_id and tx.from_account_id != fbm_drawer_account_id:

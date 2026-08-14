@@ -14,22 +14,26 @@ def dashboard():
     client_payments_today = db.session.query(func.sum(Payment.amount)).filter(
         Payment.date_posted >= today,
         Payment.date_posted < today + timedelta(days=1),
-        Payment.is_void == False
+        Payment.is_void == False,
+        Payment.payment_account_id.isnot(None),
+        Payment.amount > 0
     ).scalar() or 0
     
-    # Total payments to suppliers today (SupplierPayment table + GRN paid_amount).
+    # SupplierPayment is the canonical payment row for new GRNs.  Add only
+    # legacy GRN payments that do not have the marked auto-payment row, or
+    # the dashboard counts every GRN payment twice.
     supplier_payments_core_today = db.session.query(func.sum(SupplierPayment.amount)).filter(
         SupplierPayment.date_posted >= today,
         SupplierPayment.date_posted < today + timedelta(days=1),
         SupplierPayment.is_void == False
     ).scalar() or 0
-
-    grn_supplier_paid_today = db.session.query(func.sum(GRN.paid_amount)).filter(
+    legacy_grns_today = GRN.query.filter(
         GRN.date_posted >= today,
         GRN.date_posted < today + timedelta(days=1),
         GRN.is_void == False,
         GRN.paid_amount > 0
-    ).scalar() or 0
+    ).all()
+    grn_supplier_paid_today = _legacy_unrepresented_grn_paid_total(legacy_grns_today)
 
     supplier_payments_today = float(supplier_payments_core_today or 0) + float(grn_supplier_paid_today or 0)
     
@@ -61,7 +65,13 @@ def dashboard():
         AccountTransaction.is_void == False,
         AccountTransaction.transaction_type == 'Receipt',
         AccountTransaction.to_account_id.isnot(None),
-        ~AccountTransaction.note.ilike('%[SRC:Payment:%')
+        # Booking/direct-sale/payment source rows are already represented by
+        # their source document totals above.  Only standalone receipts belong
+        # in this additional bucket.
+        or_(
+            AccountTransaction.note.is_(None),
+            ~AccountTransaction.note.ilike('%[SRC:%')
+        )
     ).scalar() or 0
 
     receipts_today = float(booking_paid_today or 0) + float(sales_paid_today or 0) + float(client_payments_today or 0) + float(tx_receipts_today or 0)

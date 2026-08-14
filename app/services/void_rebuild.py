@@ -454,6 +454,23 @@ def hard_delete_transaction(kind, obj_id):
         BookingAllocation.query.filter_by(sale_id=sale.id).delete(synchronize_session=False)
         _delete_sale_grn_allocations(sale)
         PendingBill.query.filter(PendingBill.source_table == 'direct_sale', PendingBill.source_id == sale.id).delete(synchronize_session=False)
+
+        # A credit sale may own an Invoice row.  Hard-deleting only the sale
+        # leaves an active orphan invoice that still appears in bill searches
+        # and consistency reports.  Remove the invoice when no other sale
+        # references it; keep it intact if a legacy database shares it.
+        invoice_id = getattr(sale, 'invoice_id', None)
+        if invoice_id:
+            other_invoice_sales = DirectSale.query.filter(
+                DirectSale.invoice_id == invoice_id,
+                DirectSale.id != sale.id,
+                _not_void(DirectSale)
+            ).count()
+            if other_invoice_sales == 0:
+                invoice = db.session.get(Invoice, invoice_id)
+                if invoice:
+                    db.session.delete(invoice)
+
         marker = f'[SRC:DirectSale:{sale.id}]'
         for tx in AccountTransaction.query.filter(AccountTransaction.note.ilike(f'%{marker}%')).all():
             if not tx.is_void:
