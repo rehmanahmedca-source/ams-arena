@@ -699,3 +699,138 @@ html[data-theme="light"] {
 [data-theme="light"] .ds-sales-table tbody td { color: var(--ui-text); }
 [data-theme="light"] .ds-add-tile { background: var(--ui-surface); color: var(--ui-text); }
 [data-theme="light"] .ds-add-label { color: var(--ui-text-muted); }
+
+/* =========================================================================
+   Responsive ledger tables — "stack to cards" on small screens.
+   -------------------------------------------------------------------------
+   Wide, fixed-layout ledger tables (Client Ledger, Financial Ledger,
+   Material Ledger, Pending Bills, Supplier Ledger, …) get squeezed to an
+   unreadable sliver on phones. Adding .table-stack-cards to the <table>
+   and a data-label="…" attribute to every <td> turns each row into a
+   readable, full-width card on screens narrower than 768px — no pinch
+   zoom required (though pinch zoom stays enabled for those who want it).
+   ========================================================================= */
+@media (max-width: 767.98px) {
+    .table-stack-cards {
+        table-layout: auto !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        border: 0 !important;
+    }
+    .table-stack-cards thead {
+        display: none !important;
+    }
+    .table-stack-cards tbody,
+    .table-stack-cards tfoot,
+    .table-stack-cards tr,
+    .table-stack-cards td,
+    .table-stack-cards th {
+        display: block !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+    /* NOTE: these ledger pages are hardcoded dark, so the card palette is
+       hardcoded dark too (it must stay readable no matter the app theme). */
+    .table-stack-cards tr {
+        margin-bottom: 0.9rem;
+        border: 1px solid #334155 !important;
+        border-radius: 12px;
+        background: #1e293b;
+        box-shadow: 0 4px 12px rgba(2, 6, 23, 0.18);
+        /* No overflow:hidden here — it would clip action dropdowns. */
+    }
+    .table-stack-cards tbody tr:hover {
+        background: #1e293b !important;
+    }
+    .table-stack-cards td,
+    .table-stack-cards th {
+        padding: 0.55rem 0.9rem !important;
+        border: 0 !important;
+        border-bottom: 1px solid #334155 !important;
+        text-align: left !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        text-overflow: clip !important;
+        font-size: 0.95rem;
+        line-height: 1.4;
+        background: transparent !important;
+    }
+    .table-stack-cards td:last-child,
+    .table-stack-cards th:last-child {
+        border-bottom: 0 !important;
+    }
+    .table-stack-cards td::before {
+        content: attr(data-label);
+        display: block;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #94a3b8;
+        margin-bottom: 0.18rem;
+    }
+    .table-stack-cards td.stack-no-label::before {
+        content: none;
+    }
+    /* Group/section heading rows inside a stacked table (e.g. a material name). */
+    .table-stack-cards .stack-card-heading {
+        background: #020617 !important;
+        font-weight: 700;
+        padding: 0.7rem 0.9rem !important;
+        border-bottom: 1px solid #475569 !important;
+        text-align: left !important;
+    }
+    .table-stack-cards .stack-card-heading::before {
+        content: none !important;
+    }
+    /* Keeps action buttons / dropdowns on one comfortable line inside cards. */
+    .table-stack-cards .stack-actions-cell {
+        display: flex !important;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+    }
+    /* A table footer (e.g. the TOTAL row) becomes one highlighted summary bar. */
+    .table-stack-cards tfoot tr {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0.75rem 0.9rem;
+        margin-bottom: 0.25rem;
+        background: #020617 !important;
+        border: 1px solid #475569 !important;
+        border-radius: 12px;
+    }
+    .table-stack-cards tfoot td {
+        display: block !important;
+        width: auto !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        text-align: left !important;
+    }
+    .table-stack-cards tfoot td:last-child {
+        text-align: right !important;
+    }
+    .table-stack-cards tfoot td::before {
+        content: none !important;
+    }
+}
+
+/* Ledger page toolbars: let the row of action buttons wrap into full-width
+   tappable buttons on phones instead of overflowing off-screen. */
+@media (max-width: 767.98px) {
+    .ledger-toolbar .btn {
+        flex: 1 1 auto;
+        min-width: 130px;
+        justify-content: center;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+    }
+}
