@@ -762,21 +762,42 @@ function toggleNavGroup(groupId, btn) {
             const ctype = (res.headers.get('content-type') || '').toLowerCase();
             if (ctype.includes('application/json')) {
                 const data = await res.json();
-                const rows = data.table_results || [];
+                const rep = (data && typeof data === 'object' && data.report && typeof data.report === 'object') ? data.report : (data || {});
+                const ok = data && data.ok !== false && data.success !== false;
+                const rows = data && data.table_results ? data.table_results : (rep.table_results || []);
+                const people = data && data.users ? data.users : (rep.users || []);
+                const inserted = (data && data.inserted != null) ? data.inserted : (rep.inserted != null ? rep.inserted : (rep.imported != null ? rep.imported : 0));
+                const updated = (data && data.updated != null) ? data.updated : (rep.updated != null ? rep.updated : 0);
+                const skipped = (data && data.skipped != null) ? data.skipped : (rep.skipped != null ? rep.skipped : 0);
+                const headline = (data && data.headline)
+                    || (data && data.error ? 'Import failed: ' + data.error : '')
+                    || ('Inserted ' + inserted + ', updated ' + updated + ', skipped ' + skipped);
                 fillJobReport(
-                    data.ok ? 'Import completed — table report' : 'Import finished with problems',
-                    data.headline || ('Inserted ' + (data.inserted || 0) + ', updated ' + (data.updated || 0) + ', skipped ' + (data.skipped || 0)),
+                    ok ? 'Import completed — table report' : 'Import finished with problems',
+                    headline,
                     rows,
-                    data.users || [],
+                    people,
                     true
                 );
                 return;
             }
             if (!res.ok) {
-                fillJobReport('Import failed', extractErrorText(await res.text()), [], [], true);
+                const raw = await res.text();
+                const flashMsg = extractFlashMessage(raw);
+                fillJobReport('Import failed', flashMsg || extractErrorText(raw), [], [], true);
                 return;
             }
-            fillJobReport('Import completed', 'Server did not send a table list. Reload to verify data.', [], [], true);
+            // 2xx but not JSON: the server redirected to a page instead of a report.
+            // The flash on that page (if any) carries the real outcome.
+            const raw = await res.text();
+            const flashMsg = extractFlashMessage(raw);
+            fillJobReport(
+                'Import not confirmed',
+                flashMsg || 'The server responded with a page instead of an import report. Reload to verify whether any data was imported.',
+                [],
+                [],
+                true
+            );
         } catch (err) {
             setTaskProgress(100, 'Failed');
             fillJobReport('Import failed', (err && err.message) || 'Network error', [], [], true);
@@ -1053,6 +1074,16 @@ function toggleNavGroup(groupId, btn) {
         const dangerMatch = raw.match(/alert-danger[^>]*>(.*?)</i);
         if (dangerMatch && dangerMatch[1]) return dangerMatch[1].replace(/<[^>]*>/g, '').trim();
         return raw.slice(0, 260);
+    }
+    function extractFlashMessage(htmlOrText) {
+        // Pull the first server flash alert (any category) out of a rendered page.
+        const raw = (htmlOrText || '').replace(/\s+/g, ' ').trim();
+        const m = raw.match(/alert-(?:success|danger|warning|info)[^>]*>\s*(.*?)\s*<\/div>/i);
+        if (m && m[1]) {
+            const text = m[1].replace(/<[^>]*>/g, '').trim();
+            if (text) return text;
+        }
+        return '';
     }
     async function runFileAction(opts) {
         const url = opts.url;

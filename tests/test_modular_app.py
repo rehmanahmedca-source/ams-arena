@@ -26,6 +26,8 @@ def app(tmp_path):
             "WTF_CSRF_ENABLED": False,
             "SECRET_KEY": "test",
             "LOGIN_DISABLED": True,
+            # Keep upload test artifacts out of the repo's instance dir.
+            "IMPORT_UPLOADS_DIR": str(tmp_path / "uploads"),
         }
     )
     with application.app_context():
