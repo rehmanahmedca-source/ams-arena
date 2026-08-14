@@ -56,6 +56,10 @@ def api_supplier_payments_today():
     ).order_by(GRN.date_posted.desc()).all()
 
     for g in grns:
+        # New GRNs are already represented by their marked SupplierPayment.
+        # Keep only legacy GRN-only rows in this fallback list.
+        if _grn_has_active_auto_payment(g):
+            continue
         data.append({
             'type': 'GRN Purchase Payment',
             'id': g.id,
@@ -160,7 +164,10 @@ def api_receipts_today():
         AccountTransaction.is_void == False,
         AccountTransaction.transaction_type == 'Receipt',
         AccountTransaction.to_account_id.isnot(None),
-        ~AccountTransaction.note.ilike('%[SRC:Payment:%')
+        or_(
+            AccountTransaction.note.is_(None),
+            ~AccountTransaction.note.ilike('%[SRC:%')
+        )
     ).all()
     
     tx_data = [{
@@ -215,7 +222,10 @@ def kpi_client_payments():
         AccountTransaction.date_posted >= date_from,
         AccountTransaction.date_posted < date_to_excl,
         AccountTransaction.transaction_type == 'Receipt',
-        ~AccountTransaction.note.ilike('%[SRC:Payment:%')
+        or_(
+            AccountTransaction.note.is_(None),
+            ~AccountTransaction.note.ilike('%[SRC:%')
+        )
     ).all()
 
     items = []
@@ -313,6 +323,10 @@ def kpi_supplier_payments():
         total_amount += float(p.amount or 0)
 
     for g in grns:
+        # New GRNs already have an active SupplierPayment row.  Showing both
+        # source representations makes this KPI disagree with the ledger.
+        if _grn_has_active_auto_payment(g):
+            continue
         supplier_obj = getattr(g, 'supplier_rel', None)
         supplier_name = (supplier_obj.name if supplier_obj else (g.supplier or ''))
         items.append({
@@ -442,7 +456,10 @@ def kpi_receipts():
         AccountTransaction.is_void == False,
         AccountTransaction.transaction_type == 'Receipt',
         AccountTransaction.to_account_id.isnot(None),
-        ~AccountTransaction.note.ilike('%[SRC:Payment:%')
+        or_(
+            AccountTransaction.note.is_(None),
+            ~AccountTransaction.note.ilike('%[SRC:%')
+        )
     ).all()
 
     bookings = bookings_q.order_by(Booking.date_posted.desc(), Booking.id.desc()).all()

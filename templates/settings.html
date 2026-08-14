@@ -582,7 +582,7 @@ document.addEventListener('DOMContentLoaded', function(){
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_view_decision_ledger" checked> <label>Decision Ledger</label></div></div>
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_manage_pending_bills" checked> <label>Pending Bills</label></div></div>
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_view_reports" checked> <label>Reports (Profit/Unpaid)</label></div></div>
-                    <div class="col-6"><div class="form-check small"><input_notifications" checked> <label>Notifications</label></div></div>
+                    <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_manage_notifications" checked> <label>Notifications</label></div></div>
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_import_export"> <label>Import/Export</label></div></div>
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_manage_clients"> <label>Manage Clients</label></div></div>
                     <div class="col-6"><div class="form-check small"><input class="form-check-input" type="checkbox" name="can_manage_suppliers"> <label>Manage Suppliers</label></div></div>
@@ -662,11 +662,6 @@ document.addEventListener('DOMContentLoaded', function(){
         </form>
     </div>
 </div>
-{% endif %}
-{% endfor %}
-{% endif %}
-{% endblock %}
-/div>
 {% endif %}
 {% endfor %}
 {% endif %}

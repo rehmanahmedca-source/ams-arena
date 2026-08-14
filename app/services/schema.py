@@ -382,6 +382,12 @@ def _bootstrap_database():
     except Exception:
         pass
     try:
+        _ensure_default_admin()
+    except Exception:
+        # A populated/legacy database may intentionally manage users elsewhere;
+        # schema bootstrap must remain non-destructive in that case.
+        db.session.rollback()
+    try:
         _ensure_account_type_compat()
     except Exception:
         pass

@@ -33,8 +33,15 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path("instance") / "ahmed_cement.db"
-HEALTH_SNAPSHOT = Path("instance") / "health_snapshot.json"
+_repo_root = Path(__file__).resolve().parents[1]
+_db_env = os.environ.get("APP_DB_PATH", "").strip()
+DB_PATH = Path(_db_env).expanduser() if _db_env else (_repo_root / "instance" / "ahmed_cement.db")
+_snapshot_env = os.environ.get("DB_HEALTH_SNAPSHOT_PATH", "").strip()
+HEALTH_SNAPSHOT = (
+    Path(_snapshot_env).expanduser()
+    if _snapshot_env
+    else DB_PATH.parent / "health_snapshot.json"
+)
 TOLERANCE = 0.01
 
 
