@@ -158,9 +158,9 @@ def add_transaction():
                 _validate_account_matches_method(receive_account, method, 'Destination')
 
             if receive_from_category == 'client_ledger':
-                client = _resolve_client(client_input)
+                client = _resolve_client(client_input, active_only=True)
                 if not client:
-                    raise ValueError('Client not found. Please select a valid client from the dues list.')
+                    raise ValueError('Client not found or suspended. Please select a valid client from the dues list.')
 
                 if amount > 0:
                     receive_account.balance = float(receive_account.balance or 0) + amount
@@ -352,7 +352,7 @@ def add_transaction():
                 client_input = (request.form.get('client_input_refund') or '').strip()
                 client = Client.query.get(client_id) if client_id else None
                 if not client and client_input:
-                    client = _resolve_client(client_input)
+                    client = _resolve_client(client_input, active_only=True)
                 if not client:
                     raise ValueError('Please select a valid client.')
 

@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 AUTO_BILL_NS_DEFAULT = 'GEN'
 AUTO_BILL_NAMESPACES = {
     'PAYMENT': 'CP',
+    'SUPPLIER_PAYMENT': 'SP',
 }
 
 

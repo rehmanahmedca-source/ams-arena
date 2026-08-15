@@ -105,17 +105,20 @@ def _accounts_permission_check():
         abort(403)
 
 
-def _resolve_client(client_input):
+def _resolve_client(client_input, active_only=False):
     value = (client_input or '').strip()
     if not value:
         return None
-    client = Client.query.filter(func.lower(func.trim(Client.code)) == value.lower()).first()
+    q = Client.query
+    if active_only:
+        q = q.filter_by(is_active=True)
+    client = q.filter(func.lower(func.trim(Client.code)) == value.lower()).first()
     if client:
         return client
-    return Client.query.filter(func.lower(func.trim(Client.name)) == value.lower()).first()
+    return q.filter(func.lower(func.trim(Client.name)) == value.lower()).first()
 
 
-def _resolve_supplier(supplier_input):
+def _resolve_supplier(supplier_input, active_only=True):
     value = (supplier_input or '').strip()
     if not value:
         return None
@@ -127,10 +130,41 @@ def _resolve_supplier(supplier_input):
         supplier = Supplier.query.get(supplier_id)
         if supplier:
             return supplier
-    return Supplier.query.filter(
-        Supplier.is_active == True,
-        func.lower(func.trim(Supplier.name)) == value.lower()
-    ).first()
+    q = Supplier.query
+    if active_only:
+        q = q.filter_by(is_active=True)
+    return q.filter(func.lower(func.trim(Supplier.name)) == value.lower()).first()
+
+
+def _account_option_label(account):
+    cat = (account.category or '').strip().upper() or 'CASH'
+    label = f"[{cat}] {account.name or ''}"
+    if account.bank_name:
+        label += f" — {account.bank_name}"
+    label += f" (Bal: Rs {_money_round(account.balance):,.2f})"
+    return label
+
+
+def _active_clients():
+    """Clients that may be selected for new transactions (suspended excluded)."""
+    return Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
+
+
+def _active_suppliers():
+    """Suppliers that may be selected for new transactions (suspended excluded)."""
+    return Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all()
+
+
+def _money_round(value):
+    from decimal import Decimal, ROUND_HALF_UP
+    try:
+        d = Decimal(str(value if value is not None else 0))
+    except Exception:
+        d = Decimal('0')
+    d = d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    if d == Decimal('-0.00'):
+        d = Decimal('0.00')
+    return float(d)
 
 
 def _client_due_summary():
