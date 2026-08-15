@@ -38,11 +38,13 @@ def direct_sales_page():
 
     if filter_bill_state == 'billed':
         sales_q = sales_q.filter(or_(
+            DirectSale.category != 'Cash',
             func.length(func.trim(func.coalesce(DirectSale.manual_bill_no, ''))) > 0,
             DirectSale.invoice_id.isnot(None)
         ))
     elif filter_bill_state == 'unbilled':
         sales_q = sales_q.filter(
+            DirectSale.category == 'Cash',
             func.length(func.trim(func.coalesce(DirectSale.manual_bill_no, ''))) == 0,
             DirectSale.invoice_id.is_(None)
         )
@@ -74,10 +76,12 @@ def direct_sales_page():
     # UNBILLED: no manual bill no and no linked invoice (except Open Khata)
     active_sales_q = DirectSale.query.filter_by(is_void=False).filter(DirectSale.category != 'Open Khata')
     billed_count = active_sales_q.filter(or_(
+        DirectSale.category != 'Cash',
         func.length(func.trim(func.coalesce(DirectSale.manual_bill_no, ''))) > 0,
         DirectSale.invoice_id.isnot(None)
     )).count()
     unbilled_count = active_sales_q.filter(
+        DirectSale.category == 'Cash',
         func.length(func.trim(func.coalesce(DirectSale.manual_bill_no, ''))) == 0,
         DirectSale.invoice_id.is_(None)
     ).count()
