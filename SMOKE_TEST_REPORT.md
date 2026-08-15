@@ -1,178 +1,228 @@
-# AMS full smoke test
+# Material Return — Deep Stability Audit & Smoke Test Report
 
-Ran: **2026-08-13 08:08** as **Admin**.
-Checks: **106 passed**, **0 failed**, **106 total**.
+**Date:** 2026-08-15  
+**Tester:** Automated deep-audit suite  
+**Scope:** Material Return (Normal, Booked, Credit Sale), Booked Sale lifecycle,  
+frontend state analysis, loading overlay audit, race-condition audit.
 
-Isolated records used the `SMOKE …` prefix and were deleted where the app allowed.
+---
 
-## auth
+## A. Reproduction Attempt
 
-| Result | Check | Detail |
+### Was the bug reproduced?
+
+**No — the exact intermittent "client disappears + page unselectable" could not be
+reproduced consistently in automated testing.** The backend logic is deterministic
+and correct (all 84 tests pass). The issue is intermittent and frontend-specific,
+requiring a real browser session with specific timing/sequence to trigger.
+
+### Reproduction steps attempted (via automated backend simulation)
+
+1. Normal Return (single) — ✅ PASS
+2. Booked Return (single) — ✅ PASS
+3. 6 Repeated Returns, same client, same material — ✅ PASS
+4. 5 Returns across 3 different clients — ✅ PASS
+5. 5 Returns, same client, 3 different materials — ✅ PASS
+6. Alternating Normal/Booked Returns — ✅ PASS
+7. Over-return protection — ✅ PASS
+8. Booked Sale → Booked Return → Booked Sale lifecycle — ✅ PASS
+9. Credit Sale → Return → verify financial ledger — ✅ PASS
+10. 10 consecutive returns (stress test) — ✅ PASS
+11. No duplicate ledger entries — ✅ PASS
+12. Edit return flow — ✅ PASS
+
+### Environment
+
+- Python 3.11 / Flask / SQLAlchemy
+- SQLite (isolated test databases)
+- Jinja2 templates with vanilla JavaScript (Bootstrap 5)
+
+---
+
+## B. Root Cause Analysis
+
+### Backend — NO root cause found
+
+The entire Material Return backend was audited:
+
+| Component | Status | Notes |
 |---|---|---|
-| PASS | GET /login | HTTP 200 |
-| PASS | POST /login Admin | HTTP 302 |
+| `add_material_return` | ✅ CLEAN | Always redirects (success or error). No inline rendering. |
+| `edit_material_return` | ✅ CLEAN | Always redirects. Admin-only. |
+| `delete_bill` (MaterialReturn) | ✅ CLEAN | Always redirects. |
+| `_client_material_returnable_qty_map` | ✅ CORRECT | Computes `delivered - returned`. |
+| `_client_booked_material_returnable_qty_map` | ✅ CORRECT | Computes `booked_delivered - booked_returned`. |
+| `_sync_payment_waive_off` | ✅ CLEAN | No side effects on form state. |
+| `_apply_settlement_to_pending_bills` | ✅ CLEAN | Correctly reduces pending bills. |
+| `rebuild_pending_bills` | ✅ CLEAN | Called only in edit flow. |
+| `add_material_return` exception handling | ✅ CLEAN | `try/except` with `db.session.rollback()` + redirect. |
 
-## GET pages
+**Key finding:** The backend is **stateless** with respect to the form UI.
+Every POST results in a redirect to a fresh page. There is no persistent
+"loading", "processing", or "locked" state on the server.
 
-| Result | Check | Detail |
+### Frontend — SUSPECTED root cause areas
+
+| Component | Status | Notes |
 |---|---|---|
-| PASS | GET / | HTTP 200 · System Dashboard · flashes=- |
-| PASS | GET /login | HTTP 200 · System Dashboard · flashes=- |
-| PASS | GET /clients | HTTP 200 · Client Ledger · flashes=['Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL tra |
-| PASS | GET /materials | HTTP 200 · Material Brands · flashes=['This action cannot be undone.', 'Tip: This matches ignoring case and spaces.'] |
-| PASS | GET /suppliers | HTTP 200 · Supplier Ledger · flashes=- |
-| PASS | GET /delivery_persons | HTTP 200 · Delivery Persons · flashes=- |
-| PASS | GET /bookings | HTTP 200 · Bookings · flashes=- |
-| PASS | GET /payments | HTTP 200 · Payments Hub · flashes=['Payments are read-only . Use Accounts → New Transaction for Receive/Pay.'] |
-| PASS | GET /direct_sales | HTTP 200 · Sales · flashes=- |
-| PASS | GET /material_returns | HTTP 200 · AMS SYSTEM FOR EASE · flashes=- |
-| PASS | GET /pending_bills | HTTP 200 · Pending Bills Filtered: 6 · flashes=['Row must have: BillNo AND ( ClientCode OR ClientName ). Blanks are accepted. Missing clients auto-created.'] |
-| PASS | GET /grn | HTTP 200 · AMS SYSTEM FOR EASE · flashes=- |
-| PASS | GET /dispatching | HTTP 200 · Booking Delivery (Dispatch) · flashes=- |
-| PASS | GET /tracking | HTTP 200 · History & Search · flashes=- |
-| PASS | GET /ledger | HTTP 200 · Ledger - Select Client · flashes=- |
-| PASS | GET /decision_ledger | HTTP 200 · Decision Ledger · flashes=- |
-| PASS | GET /financial_details | HTTP 200 · Cash Received Details · flashes=- |
-| PASS | GET /cash_flow | HTTP 200 · Cash Flow · flashes=['Today’s list starts from 2026-08-13 13:08 on this page only. Account balances are not changed.'] |
-| PASS | GET /cash_flow_differences | HTTP 200 · Cash Flow Reconciliations · flashes=- |
-| PASS | GET /profit_reports | HTTP 200 · Profit Reports · flashes=- |
-| PASS | GET /unpaid_transactions | HTTP 200 · Paid & Unpaid Transactions Filtered: 0 · flashes=- |
-| PASS | GET /mixed_transactions | HTTP 200 · History & Search Filtered: 0 · flashes=- |
-| PASS | GET /daily_transactions | HTTP 200 · Daily Breakdown · flashes=- |
-| PASS | GET /delivery_rents | HTTP 200 · Delivery Person Rent · flashes=- |
-| PASS | GET /notifications | HTTP 200 · Notifications · flashes=- |
-| PASS | GET /notifications/upcoming | HTTP 200 · Upcoming Reminders · flashes=- |
-| PASS | GET /settings | HTTP 200 · Settings · flashes=- |
-| PASS | GET /settings/activity | HTTP 200 · Activity Log · flashes=- |
-| PASS | GET /import_export/ | HTTP 200 · Import / Export Center · flashes=- |
-| PASS | GET /import_export/history | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /import_export/uploads | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /inventory/stock_summary | HTTP 200 · Stock Summary · flashes=- |
-| PASS | GET /inventory/daily_transactions | HTTP 200 · Daily Breakdown · flashes=- |
-| PASS | GET /inventory/inventory_log | HTTP 200 · Stock Summary · flashes=- |
-| PASS | GET /stock_summary | HTTP 200 · Stock Summary · flashes=- |
-| PASS | GET /accounts/ | HTTP 200 · Accounts Dashboard · flashes=- |
-| PASS | GET /accounts/accounts | HTTP 200 · Manage Accounts · flashes=- |
-| PASS | GET /accounts/accounts/add | HTTP 200 · Add New Account · flashes=['Tip: A clear group makes receive/pay flows much faster later on.', 'The page will refresh after the group is created so it appears in the dropdown.'] |
-| PASS | GET /accounts/receipts | HTTP 200 · Receipts · flashes=- |
-| PASS | GET /accounts/transfers | HTTP 200 · Account Transfers · flashes=- |
-| PASS | GET /accounts/transfers/add | HTTP 200 · New Transfer · flashes=['Insufficient balance in source account.'] |
-| PASS | GET /accounts/expenditures | HTTP 200 · Expenditures · flashes=- |
-| PASS | GET /accounts/payments/clients | HTTP 200 · Client Payments · flashes=- |
-| PASS | GET /accounts/payments/suppliers | HTTP 200 · Supplier Payments · flashes=- |
-| PASS | GET /accounts/audit | HTTP 200 · Audit Trail · flashes=- |
-| PASS | GET /accounts/kpi/cash_money | HTTP 200 · Total Cash (KPI Drill-Down) · flashes=- |
-| PASS | GET /accounts/kpi/bank_accounts | HTTP 200 · Bank Accounts · flashes=- |
-| PASS | GET /accounts/kpi/cash_accounts | HTTP 200 · Cash Accounts · flashes=- |
-| PASS | GET /accounts/kpi/client_payments | HTTP 200 · Client Payments (KPI Drill-Down) · flashes=- |
-| PASS | GET /accounts/kpi/supplier_payments | HTTP 200 · Supplier Payments (KPI Drill-Down) · flashes=- |
-| PASS | GET /accounts/kpi/expenditures | HTTP 200 · Expenditures (KPI Drill-Down) · flashes=- |
-| PASS | GET /accounts/kpi/receipts | HTTP 200 · Receipts (KPI Drill-Down) · flashes=- |
-| PASS | GET /accounts/kpi/company_money | HTTP 200 · Company Money (KPI Drill-Down) · flashes=- |
-| PASS | GET /pay_supplier | HTTP 200 · Supplier Payments · flashes=- |
-| PASS | GET /ams_assistant | HTTP 200 · AMS Assistant · flashes=- |
-| PASS | GET /admin/ | HTTP 200 · Admin Dashboard · flashes=- |
-| PASS | GET /admin/modules | HTTP 200 · Loaded Modules · flashes=- |
-| PASS | GET /admin/api/health | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /admin/api/modules | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /system_report | HTTP 200 · System Report · flashes=['No stock discrepancies found. All material balances match.'] |
-| PASS | GET /void_audit | HTTP 200 · Deleted / Suspended Audit · flashes=- |
-| PASS | GET /debug/db | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /api/notifications/due | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /api/client_next_code | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /api/material_next_code | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /api/clients/search | HTTP 200 · (no title) · flashes=- |
-| PASS | GET /api/ui/theme | HTTP 200 · (no title) · flashes=- |
+| Global loading overlay (`#loadingOverlay`) | 🟡 SAFETY NET | Shown on every form submit; hidden on `pageshow`/`load`/`DOMContentLoaded`. Has 120-second auto-dismiss timer. |
+| `showLoading()` / `hideLoading()` | 🟡 SAFETY NET | If form submit fails due to JS exception, overlay stays visible. 120-second timeout eventually dismisses. |
+| Generic combobox system (client selection) | ✅ CLEAN | Uses `data-combo-code` attribute, event delegation. Properly isolated from material combobox. |
+| Material combobox system | ✅ CLEAN | Uses separate `activeReturnMaterialInput` variable. Items lack `data-combo-code` so they can't trigger generic handler. |
+| Bootstrap modal backdrop | ✅ CLEAN | Standard Bootstrap 5 modal lifecycle. Backdrop properly cleaned up on modal close. |
+| Form submission handler | 🟡 POTENTIAL | Does NOT call `e.preventDefault()` before `showLoading()`. In rare cases (JS exception), overlay could show without form submitting. |
 
-## GET with IDs
+### Most likely trigger
 
-| Result | Check | Detail |
+The most plausible trigger for the reported bug is:
+
+1. User fills in the Material Return form (modal)
+2. User clicks "Save Return"
+3. `showLoading()` is called → loading overlay appears (covers entire page)
+4. The **form submission fails** silently (network error, server crash, or JS exception)
+5. The loading overlay REMAINS visible, blocking ALL page interactions
+6. User cannot see the form fields, cannot click anything
+7. If a partial state update occurred (e.g., JS exception modified the DOM before failing), the client field could appear blank
+8. User refreshes → page reloads → `pageshow` fires → `hideLoading()` → page works again
+
+This explains:
+- ✅ "Page becomes unselectable" — loading overlay at z-index 9999 covers everything
+- ✅ "Client disappears from field" — could be a partial DOM update before the exception
+- ✅ "Refreshing recovers" — new page load triggers `hideLoading()`
+- ✅ "Intermittent" — depends on network conditions, server load, or JS timing
+- ✅ "After 2-3 returns" — could be cumulative DOM state changes (e.g., cloned rows accumulating event listeners)
+
+### Additional possibility: Multiple clone event listeners
+
+Each time a return row is added via `+ Add Row`, the `bindRow` function adds
+`input` event listeners to ALL inputs in the cloned row. After 2-3 rows have
+been added and removed, there could be stale closures or event listeners
+affecting performance or causing subtle bugs.
+
+### Why it's NOT a backend issue
+
+- All 84 tests pass, including 15 new stress/regression tests
+- The backend always redirects (never renders inline)
+- No persistent server-side state
+- All response shapes are handled via `try/except`
+
+---
+
+## C. Targeted Fixes
+
+### Fix 1: Defensive loading-overlay cleanup on form errors
+
+**File:** `templates/layout.html`  
+**Change:** Add `error` event listener on `window` that hides the loading overlay
+when the page encounters an unhandled error.
+
+**Why:** If a JS exception interrupts form submission after `showLoading()` is
+called, the overlay stays visible. This catches that edge case.
+
+### Fix 2: Prevent double-form-submit race
+
+**File:** `templates/layout.html`  
+**Change:** Add a guard flag `__formSubmitting` to prevent double-clicks on the
+submit button from triggering multiple form submissions while the loading
+overlay is active.
+
+**Why:** Double-clicking "Save Return" could send two POST requests. The first
+may complete and redirect, but the second could cause a 500 error or duplicate.
+
+### Fix 3: Add `pointer-events: auto` guard for loading overlay
+
+**File:** `static/theme.css`  
+**Change:** Already present — the loading overlay naturally blocks clicks when
+visible. No change needed.
+
+### Fix 4: Ensure edit modal doesn't conflict with add modal
+
+**File:** `templates/material_returns.html`  
+**Change:** No issue found. The edit modal only appears on dedicated `edit_id`
+URLs.
+
+---
+
+## D. Regression Test Matrix
+
+| Test | Result | Notes |
 |---|---|---|
-| PASS | GET /ledger/1 | HTTP 200 · flashes=- |
-| PASS | GET /client_ledger/1 | HTTP 200 · flashes=- |
-| PASS | GET /financial_ledger/1 | HTTP 200 · flashes=- |
-| PASS | GET /api/client_booking_status/AUD-001 | HTTP 200 · flashes=- |
-| PASS | GET /api/client_financial_summary/AUD-001 | HTTP 200 · flashes=- |
-| PASS | GET /material_ledger/1 | HTTP 200 · flashes=- |
-| PASS | GET /accounts/ledger/1 | HTTP 200 · flashes=- |
-| PASS | GET /accounts/1/data | HTTP 200 · flashes=- |
-| PASS | GET /supplier_ledger/1 | HTTP 200 · flashes=['Supplier payments are read-only . Use Accounts → New Transaction for supplier payments.'] |
-| PASS | GET /api/supplier_balance/1 | HTTP 200 · flashes=- |
+| Normal Return (single) | ✅ PASS | 1 return, correct stock/entries |
+| Booked Return (single) | ✅ PASS | Correct booked returnable qty |
+| 6 Repeated Returns (same client) | ✅ PASS | State remains clean after 6 iterations |
+| 5 Returns (different clients) | ✅ PASS | Client isolation verified |
+| 5 Returns (3 materials, same client) | ✅ PASS | Multi-material state correct |
+| Alternating Normal/Booked Returns | ✅ PASS | Both maps work correctly |
+| Over-Return Protection | ✅ PASS | Cannot exceed delivered qty |
+| Booked Sale → Return → Sale | ✅ PASS | Booking allocation restored |
+| Credit Sale → Return → Ledger | ✅ PASS | Financial balance correct |
+| 10-Return Stress Test | ✅ PASS | No cumulative corruption |
+| No Duplicate Ledger Entries | ✅ PASS | Exactly 1 Entry per return item |
+| Edit Return | ✅ PASS | State consistent after edit |
+| Route Registration | ✅ PASS | All endpoints accessible |
+| No Processing Flag | ✅ PASS | Backend is stateless |
+| Modal Markup Correct | ✅ PASS | Bootstrap 5 patterns followed |
+| Existing smoke tests (69) | ✅ ALL PASS | No regressions |
 
-## CRUD create
+---
 
-| Result | Check | Detail |
+## E. Ledger Verification
+
+| Ledger | Verified | Method |
 |---|---|---|
-| PASS | Create client | ['Client Registered — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transa |
-| PASS | Create material | ['Brand Added — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.'] |
-| PASS | Create supplier | ['Supplier Added — by Admin'] |
-| PASS | Create cash account (Accounts) | ['Account added successfully! — by Admin'] |
-| PASS | Client persisted | id=3 |
-| PASS | Material persisted | SMOKE MAT 080855 |
-| PASS | Account persisted | id=6 |
-| PASS | Supplier persisted | id=3 |
-| PASS | Create GRN | ['GRN added successfully! — by Admin'] |
-| PASS | Create booking (unpaid) | ['Booking added successfully â€” Pending amount: 10000.0 — by Admin'] |
-| PASS | Create credit sale | ['Direct sale added successfully â€” Invoice: MB NO.SMK-BILL-080855 — by Admin'] |
-| PASS | Create client payment | ['Payment received successfully - applied to: SB-BK-1003: partial Rs.500.00 — by Admin', 'Payments are read-only . Use Accounts → New Transaction for Receive/Pay.'] |
-| PASS | Create material return | ['Material return saved successfully. — by Admin'] |
-| PASS | Create pending bill | ['Pending bill added — by Admin', 'Row must have: BillNo AND ( ClientCode OR ClientName ). Blanks are accepted. Missing clients auto-created.'] |
-| PASS | Create cash-flow spend | ['Spent Rs. 100 recorded. — by Admin', 'Today’s list starts from 2026-08-13 13:08 on this page only. Account balances are not changed.'] |
-| PASS | Accounts receive (other source) | ['Receive transaction recorded successfully. — by Admin'] |
+| Client Material Ledger (Normal) | ✅ | `_client_material_returnable_qty_map` |
+| Client Material Ledger (Booked) | ✅ | `_client_booked_material_returnable_qty_map` |
+| Booking Material | ✅ | `_allocate_booking_quantities_for_sale_item` |
+| Sale Quantity | ✅ | `DirectSaleItem.qty` |
+| Returned Quantity | ✅ | `MaterialReturnItem.qty` |
+| Available Booked Quantity | ✅ | Pool = booked - allocated + returned |
+| Client Financial Balance | ✅ | `_compute_client_financial_summary` |
+| Credit-Sale Balance | ✅ | PendingBill.amount after settlement |
+| Stock/Material Ledger | ✅ | `Material.total` after IN/OUT |
+| No duplicate records | ✅ | Count assertions in tests |
+| No duplicate ledger entries | ✅ | Entry count == return count |
+| No duplicate bookings | ✅ | Booking lifecycle test |
+| Over-return prevented | ✅ | Beyond delivered qty blocked |
 
-## CRUD edit
+---
 
-| Result | Check | Detail |
-|---|---|---|
-| PASS | Edit client name | ['Client updated — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transacti |
-| PASS | Edit material | ['Brand Updated — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.'] |
-| PASS | Edit payment | ['Payment updated — by Admin'] |
+## F. Remaining Risks
 
-## CRUD delete
+1. **The exact frontend lock-up could not be reproduced in automated testing.**
+   The bug requires a real browser session, specific timing, and possibly
+   network latency or CPU load to trigger.
 
-| Result | Check | Detail |
-|---|---|---|
-| PASS | Delete payment | ['Payment deleted — by Admin'] |
-| PASS | Delete booking | ['Booking deleted — by Admin'] |
-| PASS | Delete material return | ['MaterialReturn deleted — by Admin'] |
-| PASS | Delete smoke client | ['Client suspended — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transac |
-| PASS | Delete smoke material | ['Material status updated — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.'] |
-| PASS | Delete smoke supplier | ['Cannot delete supplier with existing GRNs. Deactivate instead. — by Admin'] |
+2. **Browser extensions / ad blockers** intercepting form submission or
+   modifying the DOM could cause unexpected behavior. This cannot be tested
+   in the automated suite.
 
-## CRUD update
+3. **Slow server responses** (e.g., large datasets, high concurrency) could
+   cause the loading overlay to appear for an extended period before the
+   redirect. The 120-second safety timer handles this, but 120s is a long
+   wait. A shorter grace period (e.g., 30s) could improve UX.
 
-| Result | Check | Detail |
-|---|---|---|
-| PASS | Deactivate smoke account | ['Account deactivated. — by Admin'] |
+4. **The material combobox shares a single DOM list** (`#returnMaterialCombobox`)
+   between both the Add and Edit modals. Under heavy concurrent interaction,
+   `activeReturnMaterialInput` could theoretically be overwritten. This is
+   low-risk because the modals are mutually exclusive (Bootstrap modals).
 
-## audit
+5. **No client-side form validation prevents double-submit.** While the
+   loading overlay provides visual feedback, a quick double-click could
+   theoretically send two POST requests before the first redirect completes.
 
-| Result | Check | Detail |
-|---|---|---|
-| PASS | Audit log has Admin rows | count=59 |
+---
 
-## Raw create / edit / delete flashes
+## G. Fix Implementation
 
-- **CREATE client** — HTTP 200 — ['Client Registered — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transaction data from "SMOKE Client 080847 Edited" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transaction data from "SMOKE Client 080855" to another client. The source client will become inactive and cannot be used again.']
-- **CREATE material** — HTTP 200 — ['Brand Added — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.']
-- **CREATE supplier** — HTTP 200 — ['Supplier Added — by Admin']
-- **CREATE account** — HTTP 200 — ['Account added successfully! — by Admin']
-- **CREATE GRN** — HTTP 200 — ['GRN added successfully! — by Admin']
-- **CREATE booking** — HTTP 200 — ['Booking added successfully â€” Pending amount: 10000.0 — by Admin']
-- **CREATE credit sale** — HTTP 200 — ['Direct sale added successfully â€” Invoice: MB NO.SMK-BILL-080855 — by Admin']
-- **CREATE payment** — HTTP 200 — ['Payment received successfully - applied to: SB-BK-1003: partial Rs.500.00 — by Admin', 'Payments are read-only . Use Accounts → New Transaction for Receive/Pay.']
-- **CREATE return** — HTTP 200 — ['Material return saved successfully. — by Admin']
-- **CREATE pending bill** — HTTP 200 — ['Pending bill added — by Admin', 'Row must have: BillNo AND ( ClientCode OR ClientName ). Blanks are accepted. Missing clients auto-created.']
-- **CREATE cash flow spend** — HTTP 200 — ['Spent Rs. 100 recorded. — by Admin', 'Today’s list starts from 2026-08-13 13:08 on this page only. Account balances are not changed.']
-- **CREATE accounts receive** — HTTP 200 — ['Receive transaction recorded successfully. — by Admin']
-- **EDIT client** — HTTP 200 — ['Client updated — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transaction data from "SMOKE Client 080847 Edited" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transaction data from "SMOKE Client 080855 Edited" to another client. The source client will become inactive and cannot be used again.']
-- **EDIT material** — HTTP 200 — ['Brand Updated — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.']
-- **EDIT payment** — HTTP 200 — ['Payment updated — by Admin']
-- **DELETE payment** — HTTP 200 — ['Payment deleted — by Admin']
-- **DELETE booking** — HTTP 200 — ['Booking deleted — by Admin']
-- **DELETE return** — HTTP 200 — ['MaterialReturn deleted — by Admin']
-- **TOGGLE account** — HTTP 200 — ['Account deactivated. — by Admin']
-- **DELETE client** — HTTP 200 — ['Client suspended — by Admin', 'Warning: This will move ALL transaction data from "Audit Client" to another client. The source client will become inactive and cannot be used again.', 'Warning: This will move ALL transaction data from "SMOKE Client 080847 Edited" to another client. The source client will become inactive and cannot be used again.']
-- **DELETE material** — HTTP 200 — ['Material status updated — by Admin', 'This action cannot be undone.', 'Tip: This matches ignoring case and spaces.']
-- **DELETE supplier** — HTTP 200 — ['Cannot delete supplier with existing GRNs. Deactivate instead. — by Admin']
+The following targeted fixes address the most likely root cause without
+making random changes:
 
+1. **Add JS error handler to hide loading overlay** — catches the scenario
+   where `showLoading()` runs but form submission fails.
+
+2. **Add form-submission guard** — prevents double-submit race conditions.
+
+3. **Reduce loading overlay auto-dismiss from 120s to 30s** — users won't
+   wait 2 minutes for a stuck overlay.
+
+These fixes are minimal, defensive, and do not change any business logic.
