@@ -3,6 +3,7 @@
 {% block title %}New Transfer{% endblock %}
 
 {% block content %}
+{% from 'accounts/_entity_combobox.html' import entity_combobox %}
 <style>
 .acc-page-header{ background: linear-gradient(135deg, rgba(59,130,246,0.18), rgba(139,92,246,0.18)); border:1px solid rgba(148,163,184,0.18); border-radius:16px; padding:20px 24px; margin-bottom:24px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;}
 .acc-page-header h2{ margin:0; font-weight:700; } .acc-page-header .subtitle{ color:var(--text-muted); font-size:.9rem; margin-top:4px;}
@@ -32,22 +33,10 @@
             <form method="POST" class="tf-card">
                 <div class="row g-3">
                     <div class="col-md-6">
-                        <label class="form-label" for="from_account"><i class="bi bi-arrow-up-right text-danger me-1"></i>From Account <span class="text-danger">*</span></label>
-                        <select class="form-select" id="from_account" name="from_account" required>
-                            <option value="">Select source account</option>
-                            {% for a in accounts %}
-                            <option value="{{ a.id }}" data-name="{{ a.name }}" data-bal="{{ a.balance or 0 }}">{{ a.name }} — Rs. {{ "%.2f"|format(a.balance or 0) }}</option>
-                            {% endfor %}
-                        </select>
+                        {{ entity_combobox('fromAccountSearch', account_options, code_attr='id', name_attr='label', value_input_id='from_account', label='From Account', placeholder='Search source account…', required=True) }}
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label" for="to_account"><i class="bi bi-arrow-down-left text-success me-1"></i>To Account <span class="text-danger">*</span></label>
-                        <select class="form-select" id="to_account" name="to_account" required>
-                            <option value="">Select destination account</option>
-                            {% for a in accounts %}
-                            <option value="{{ a.id }}" data-name="{{ a.name }}" data-bal="{{ a.balance or 0 }}">{{ a.name }} — Rs. {{ "%.2f"|format(a.balance or 0) }}</option>
-                            {% endfor %}
-                        </select>
+                        {{ entity_combobox('toAccountSearch', account_options, code_attr='id', name_attr='label', value_input_id='to_account', label='To Account', placeholder='Search destination account…', required=True) }}
                     </div>
                     <div class="col-md-6">
                         <label class="form-label" for="amount">Amount (Rs.) <span class="text-danger">*</span></label>
@@ -89,21 +78,22 @@
 const fromSel = document.getElementById('from_account');
 const toSel = document.getElementById('to_account');
 const amtInp = document.getElementById('amount');
+const accountData = {{ account_data|tojson }};
 function fmt(n){ return 'Rs. ' + (Number(n||0)).toFixed(2); }
 function refresh() {
-    const fOpt = fromSel.options[fromSel.selectedIndex];
-    const tOpt = toSel.options[toSel.selectedIndex];
-    const fName = fOpt && fOpt.dataset.name ? fOpt.dataset.name : 'From';
-    const tName = tOpt && tOpt.dataset.name ? tOpt.dataset.name : 'To';
-    const fBal = fOpt && fOpt.dataset.bal ? Number(fOpt.dataset.bal) : 0;
-    const tBal = tOpt && tOpt.dataset.bal ? Number(tOpt.dataset.bal) : 0;
+    const fOpt = accountData[fromSel.value] || null;
+    const tOpt = accountData[toSel.value] || null;
+    const fName = fOpt ? fOpt.name : 'From';
+    const tName = tOpt ? tOpt.name : 'To';
+    const fBal = fOpt ? Number(fOpt.balance) : 0;
+    const tBal = tOpt ? Number(tOpt.balance) : 0;
     const amt = Number(amtInp.value || 0);
     document.getElementById('pv-from').textContent = fName;
     document.getElementById('pv-to').textContent = tName;
     document.getElementById('pv-amount').textContent = fmt(amt);
-    document.getElementById('pv-from-after').textContent = fOpt && fOpt.value ? fmt(fBal - amt) : '—';
-    document.getElementById('pv-to-after').textContent = tOpt && tOpt.value ? fmt(tBal + amt) : '—';
-    document.getElementById('pv-warn').classList.toggle('d-none', !(fOpt && fOpt.value && amt > fBal));
+    document.getElementById('pv-from-after').textContent = fOpt ? fmt(fBal - amt) : '—';
+    document.getElementById('pv-to-after').textContent = tOpt ? fmt(tBal + amt) : '—';
+    document.getElementById('pv-warn').classList.toggle('d-none', !(fOpt && amt > fBal));
 }
 [fromSel, toSel, amtInp].forEach(e => e.addEventListener('input', refresh));
 [fromSel, toSel].forEach(e => e.addEventListener('change', refresh));

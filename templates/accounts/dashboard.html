@@ -422,7 +422,7 @@
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">Receive To Account</label>
-                                    <select class="form-select" name="receive_account_id" id="receive_account_id">
+                                    <select class="form-select acc-searchable-select" data-search-placeholder="Search accounts…" name="receive_account_id" id="receive_account_id">
                                         <option value="">Select company account receiving this payment</option>
                                         {% for account in company_accounts %}
                                         <option value="{{ account.id }}">{{ account.name }} (Rs. {{ "%.2f"|format(account.balance) }})</option>
@@ -435,10 +435,10 @@
                                     <label class="form-label">Receive From Client</label>
                                     <div class="position-relative">
                                         <div class="input-group">
-                                            <input type="text" name="client_input" id="receiveClientInput" class="form-control" placeholder="Search by client name or code" autocomplete="off" onfocus="showCombobox('receiveClientInput', 'receiveClientCombobox')" oninput="filterCombobox('receiveClientInput', 'receiveClientCombobox', 'receiveClientNameInfo'); updateDueDisplay()">
+                                            <input type="text" name="client_input" id="receiveClientInput" data-combo-list="receiveClientCombobox" role="combobox" aria-controls="receiveClientCombobox" aria-expanded="false" class="form-control" placeholder="Search by client name or code" autocomplete="off" onfocus="showCombobox('receiveClientInput', 'receiveClientCombobox')" oninput="filterCombobox('receiveClientInput', 'receiveClientCombobox', 'receiveClientNameInfo'); updateDueDisplay()">
                                             <button class="btn btn-outline-secondary" type="button" onclick="toggleCombobox('receiveClientInput', 'receiveClientCombobox')"><i class="bi bi-chevron-down"></i></button>
                                         </div>
-                                        <div id="receiveClientCombobox" class="combobox-list shadow-lg" style="display:none;">
+                                        <div id="receiveClientCombobox" role="listbox" class="combobox-list shadow-lg" style="display:none;">
                                             {% for c in clients %}
                                             <div class="combobox-item" data-code="{{ c.code }}" data-name="{{ c.name }}" onclick='selectDueClient("receiveClientInput", "receiveClientCombobox", {{ (c.code or c.name)|tojson }}, {{ c.name|tojson }}, 0, "receiveClientNameInfo", "receiveClientDueInfo")'>
                                                 <div class="fw-bold">{{ c.code }} - {{ c.name }}</div>
@@ -453,7 +453,7 @@
 
                                 <div class="col-md-12 d-none" id="receiveFromAccountWrap">
                                     <label class="form-label">Receive From Account</label>
-                                    <select class="form-select" name="receive_from_account_id" id="receive_from_account_id">
+                                    <select class="form-select acc-searchable-select" data-search-placeholder="Search accounts…" name="receive_from_account_id" id="receive_from_account_id">
                                         <option value="">Select source account</option>
                                         {% for account in accounts %}
                                         <option value="{{ account.id }}">{{ account.name }} (Rs. {{ "%.2f"|format(account.balance) }})</option>
@@ -488,7 +488,7 @@
                             <div class="row g-3">
                                 <div class="col-md-6">
                                     <label class="form-label">Pay From Account</label>
-                                    <select class="form-select" name="pay_from_account_id" id="pay_from_account_id">
+                                    <select class="form-select acc-searchable-select" data-search-placeholder="Search accounts…" name="pay_from_account_id" id="pay_from_account_id">
                                         <option value="">Select source account</option>
                                         {% for account in accounts %}
                                         <option value="{{ account.id }}">{{ account.name }} (Rs. {{ "%.2f"|format(account.balance) }})</option>
@@ -509,7 +509,7 @@
 
                                 <div class="col-md-6" id="payToAccountWrap">
                                     <label class="form-label">Pay To Account</label>
-                                    <select class="form-select" name="pay_to_account_id" id="pay_to_account_id">
+                                    <select class="form-select acc-searchable-select" data-search-placeholder="Search accounts…" name="pay_to_account_id" id="pay_to_account_id">
                                         <option value="">Select destination account</option>
                                         {% for account in accounts %}
                                         <option value="{{ account.id }}">{{ account.name }}</option>
@@ -522,10 +522,10 @@
                                     <input type="hidden" name="supplier_id" id="supplier_id" value="">
                                     <div class="position-relative">
                                         <div class="input-group">
-                                            <input type="text" name="supplier_input" id="paySupplierInput" class="form-control" placeholder="Search supplier" autocomplete="off" onfocus="showCombobox('paySupplierInput', 'paySupplierCombobox')" oninput="document.getElementById('supplier_id').value=''; filterCombobox('paySupplierInput', 'paySupplierCombobox'); clearSupplierDisplay()">
+                                            <input type="text" name="supplier_input" id="paySupplierInput" data-combo-list="paySupplierCombobox" role="combobox" aria-controls="paySupplierCombobox" aria-expanded="false" class="form-control" placeholder="Search supplier" autocomplete="off" onfocus="showCombobox('paySupplierInput', 'paySupplierCombobox')" oninput="document.getElementById('supplier_id').value=''; filterCombobox('paySupplierInput', 'paySupplierCombobox'); clearSupplierDisplay()">
                                             <button class="btn btn-outline-secondary" type="button" onclick="toggleCombobox('paySupplierInput', 'paySupplierCombobox')"><i class="bi bi-chevron-down"></i></button>
                                         </div>
-                                        <div id="paySupplierCombobox" class="combobox-list shadow-lg" style="display:none;">
+                                        <div id="paySupplierCombobox" role="listbox" class="combobox-list shadow-lg" style="display:none;">
                                             {% for supplier in suppliers %}
                                             <div class="combobox-item" onclick='selectSupplier({{ supplier.id }}, {{ supplier.name|tojson }})'>
                                                 <div class="fw-bold">{{ supplier.name }}</div>
@@ -549,10 +549,10 @@
                                     <input type="hidden" name="client_id_refund" id="client_id_refund" value="">
                                     <div class="position-relative">
                                         <div class="input-group">
-                                            <input type="text" name="client_input_refund" id="payClientInput" class="form-control" placeholder="Search client" autocomplete="off" onfocus="showCombobox('payClientInput', 'payClientCombobox')" oninput="document.getElementById('client_id_refund').value=''; filterCombobox('payClientInput', 'payClientCombobox'); clearClientDisplayForPay()">
+                                            <input type="text" name="client_input_refund" id="payClientInput" data-combo-list="payClientCombobox" role="combobox" aria-controls="payClientCombobox" aria-expanded="false" class="form-control" placeholder="Search client" autocomplete="off" onfocus="showCombobox('payClientInput', 'payClientCombobox')" oninput="document.getElementById('client_id_refund').value=''; filterCombobox('payClientInput', 'payClientCombobox'); clearClientDisplayForPay()">
                                             <button class="btn btn-outline-secondary" type="button" onclick="toggleCombobox('payClientInput', 'payClientCombobox')"><i class="bi bi-chevron-down"></i></button>
                                         </div>
-                                        <div id="payClientCombobox" class="combobox-list shadow-lg" style="display:none;">
+                                        <div id="payClientCombobox" role="listbox" class="combobox-list shadow-lg" style="display:none;">
                                             {% for c in clients %}
                                             <div class="combobox-item" data-code="{{ c.code }}" data-name="{{ c.name }}" onclick='selectPayClient({{ (c.code or c.name)|tojson }}, {{ c.name|tojson }}, "client_id_refund", "payClientInput")'>
                                                 <div class="fw-bold">{{ c.code }} - {{ c.name }}</div>

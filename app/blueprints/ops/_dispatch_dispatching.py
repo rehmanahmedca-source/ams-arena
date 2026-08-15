@@ -4,7 +4,7 @@ from ._common import *  # noqa
 @bp.route('/dispatching')
 @login_required
 def dispatching():
-    mats = Material.query.order_by(Material.name.asc()).all()
+    mats = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     cls = Client.query.filter(Client.is_active == True).order_by(Client.name.asc()).all()
     dps = DeliveryPerson.query.filter_by(is_active=True).order_by(DeliveryPerson.name.asc()).all()
     today = pk_today().strftime('%Y-%m-%d')

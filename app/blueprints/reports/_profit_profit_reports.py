@@ -45,10 +45,14 @@ def profit_reports():
         return (float(num or 0) / float(den or 0)) * 100.0
 
     resolved_client = client_query
+    resolved_client_obj = None
     if client_query:
         code_match = Client.query.filter(Client.code.ilike(f'%{client_query}%')).first()
         if code_match:
+            resolved_client_obj = code_match
             resolved_client = code_match.name
+        else:
+            resolved_client_obj = Client.query.filter(func.lower(func.trim(Client.name)) == client_query.lower()).first()
 
     purchase_query = db.session.query(GRNItem, GRN).join(GRN, GRNItem.grn_id == GRN.id).filter(
         GRN.is_void == False,
@@ -160,7 +164,13 @@ def profit_reports():
         func.date(Payment.date_posted) <= end_date
     )
     if resolved_client:
-        legacy_discount_q = legacy_discount_q.filter(Payment.client_name.ilike(f'%{resolved_client}%'))
+        if resolved_client_obj:
+            legacy_discount_q = legacy_discount_q.filter(or_(
+                Payment.client_id == resolved_client_obj.id,
+                and_(Payment.client_id.is_(None), Payment.client_name.ilike(f'%{resolved_client}%')),
+            ))
+        else:
+            legacy_discount_q = legacy_discount_q.filter(Payment.client_name.ilike(f'%{resolved_client}%'))
     for p in legacy_discount_q.all():
         if p.id in represented_payment_ids:
             continue
@@ -546,6 +556,33 @@ def profit_reports():
             t['profit'] = float(t.get('revenue') or 0) - float(t.get('cogs') or 0)
             t['is_loss'] = bool(t.get('cogs_known')) and (float(t.get('profit') or 0) < 0)
 
+    # Finalised account reconciliation differences are explicit P/L events.
+    # They are never folded into sale rows because they have their own immutable
+    # reconciliation reference and account-ledger adjustment.
+    if not resolved_client and not material_query:
+        reconciliation_q = AccountTransaction.query.filter(
+            AccountTransaction.is_void == False,
+            AccountTransaction.transaction_type.in_(['Reconciliation Loss', 'Reconciliation Excess']),
+            func.date(AccountTransaction.date_posted) >= start_date,
+            func.date(AccountTransaction.date_posted) <= end_date,
+        )
+        for adjustment in reconciliation_q.order_by(AccountTransaction.date_posted.asc(), AccountTransaction.id.asc()).all():
+            amount = float(adjustment.amount or 0)
+            is_loss = adjustment.transaction_type == 'Reconciliation Loss'
+            account = adjustment.from_account if is_loss else adjustment.to_account
+            transactions.append({
+                'date': adjustment.date_posted,
+                'source': ('Account Reconciliation Loss' if is_loss else 'Account Reconciliation Profit / Excess'),
+                'reference': f'RECON-{adjustment.reconciliation_id or adjustment.source_id or adjustment.id}',
+                'client': account.name if account else 'Account',
+                'material': 'Account Reconciliation',
+                'qty': 0.0, 'sale_rate': 0.0, 'cost_rate': 0.0,
+                'discount_loss': amount if is_loss else 0.0,
+                'revenue': 0.0, 'cogs': 0.0,
+                'profit': -amount if is_loss else amount,
+                'is_loss': is_loss, 'cogs_known': True,
+            })
+
     # Remove internal helper keys before rendering.
     for t in transactions:
         t.pop('_client_norm', None)
@@ -759,7 +796,13 @@ def profit_reports():
         func.date(Payment.date_posted) <= end_date
     )
     if resolved_client:
-        payment_received_only_q = payment_received_only_q.filter(Payment.client_name.ilike(f'%{resolved_client}%'))
+        if resolved_client_obj:
+            payment_received_only_q = payment_received_only_q.filter(or_(
+                Payment.client_id == resolved_client_obj.id,
+                and_(Payment.client_id.is_(None), Payment.client_name.ilike(f'%{resolved_client}%')),
+            ))
+        else:
+            payment_received_only_q = payment_received_only_q.filter(Payment.client_name.ilike(f'%{resolved_client}%'))
     payment_received_only = float(payment_received_only_q.with_entities(func.sum(Payment.amount)).scalar() or 0)
 
     booking_paid_collected = 0.0

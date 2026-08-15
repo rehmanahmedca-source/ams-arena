@@ -1,13 +1,34 @@
 """accounts_crud — split from accounts.py."""
 from ._common import *  # noqa
 
+
+def _account_master_permission_ok():
+    return (getattr(current_user, 'role', '') or '').strip().lower() in ('admin', 'root')
+
+
+def _deny_account_master_mutation():
+    if _account_master_permission_ok():
+        return None
+    from flask import abort
+    abort(403)
+
+
 @accounts_bp.route('/accounts')
 @login_required
 def manage_accounts():
     """Manage financial accounts."""
     _ensure_default_account_categories()
     _backfill_legacy_account_groups()
-    accounts = _active_accounts().order_by(Account.name).all()
+    show_mode = (request.args.get('show') or 'active').strip().lower()
+    q = Account.query
+    if show_mode == 'archived':
+        q = q.filter(Account.is_active == False)
+    elif show_mode == 'all':
+        pass
+    else:
+        show_mode = 'active'
+        q = q.filter(func.coalesce(Account.is_active, True) == True)
+    accounts = q.order_by(Account.name.asc(), Account.id.asc()).all()
     categories = _account_categories()
     
     # Group accounts by category and type for better organization
@@ -20,12 +41,15 @@ def manage_accounts():
             account_summary[key] = []
         account_summary[key].append(account)
     
-    return render_template('accounts/manage_accounts.html', accounts=accounts, account_summary=account_summary, categories=categories)
+    return render_template('accounts/manage_accounts.html', accounts=accounts, account_summary=account_summary,
+                           categories=categories, show_mode=show_mode,
+                           can_manage_master=_account_master_permission_ok())
 
 
 @accounts_bp.route('/categories/add', methods=['POST'])
 @login_required
 def add_account_category():
+    _deny_account_master_mutation()
     name = (request.form.get('name') or '').strip()
     note = (request.form.get('note') or '').strip()
 
@@ -52,6 +76,7 @@ def add_account_category():
 @login_required
 def add_account():
     """Add a new account."""
+    _deny_account_master_mutation()
     _ensure_default_account_categories()
     _backfill_legacy_account_groups()
     if request.method == 'POST':
@@ -83,9 +108,11 @@ def add_account():
             return redirect(url_for('accounts.add_account'))
 
         try:
-            initial_balance = float(initial_balance_raw or 0)
-        except ValueError:
-            flash('Initial balance must be a valid number.', 'danger')
+            from utils.money import from_minor, to_minor
+            initial_balance_minor = to_minor(initial_balance_raw or 0, field='Initial balance')
+            initial_balance = float(from_minor(initial_balance_minor))
+        except ValueError as exc:
+            flash(str(exc), 'danger')
             return redirect(url_for('accounts.add_account'))
 
         if category == 'bank':
@@ -109,6 +136,10 @@ def add_account():
             account_type=account_type,
             type=account_type,
             balance=initial_balance,
+            balance_minor=initial_balance_minor,
+            opening_balance=initial_balance,
+            opening_balance_minor=initial_balance_minor,
+            opening_balance_date=pk_now(),
             bank_name=bank_name,
             account_holder_name=account_holder_name,
             account_number=account_number,
@@ -116,7 +147,15 @@ def add_account():
             note=note
         )
         try:
+            from utils.accounting_audit import record_accounting_audit
             db.session.add(account)
+            db.session.flush()
+            record_accounting_audit(
+                current_user, action='Create', entity_type='Account', entity_id=account.id,
+                after={'name': name, 'category': category, 'source_category': category_exists.name,
+                       'account_type': account_type, 'opening_balance': initial_balance},
+                amount_after=initial_balance, account_after_id=account.id, reason=note,
+            )
             db.session.commit()
         except IntegrityError as exc:
             db.session.rollback()
@@ -128,7 +167,6 @@ def add_account():
             flash(f'Unable to add account: {exc}', 'danger')
             return redirect(url_for('accounts.add_account'))
 
-        audit_log(current_user, 'account.create', f'name={name}, category={category}, source_category={category_exists.name}, account_type={account_type}')
         flash('Account added successfully!', 'success')
         return redirect(url_for('accounts.manage_accounts'))
 
@@ -153,18 +191,11 @@ def account_ledger(account_id):
     if not show_voided:
         base_filters.append(AccountTransaction.is_void == False)
 
-    # Opening balance = current balance - net effect of (active) transactions in/after date_from
-    after_in = db.session.query(func.coalesce(func.sum(AccountTransaction.amount), 0)).filter(
-        AccountTransaction.is_void == False,
-        AccountTransaction.to_account_id == account.id,
-        AccountTransaction.date_posted >= date_from
-    ).scalar() or 0
-    after_out = db.session.query(func.coalesce(func.sum(AccountTransaction.amount), 0)).filter(
-        AccountTransaction.is_void == False,
-        AccountTransaction.from_account_id == account.id,
-        AccountTransaction.date_posted >= date_from
-    ).scalar() or 0
-    opening_balance = float(account.balance or 0) - float(after_in or 0) + float(after_out or 0)
+    # Reproducible opening from the explicit account baseline + ledger, not from
+    # a frontend/current-balance subtraction that can include later periods.
+    from app.services.payments_crud import ledger_balance
+    opening_cutoff = datetime.combine(date_from, datetime.min.time()) - timedelta(microseconds=1)
+    opening_balance = ledger_balance(account.id, as_of=opening_cutoff)
 
     q = AccountTransaction.query.filter(*base_filters,
         AccountTransaction.date_posted >= date_from,
@@ -183,9 +214,24 @@ def account_ledger(account_id):
         AccountTransaction.from_account_id == account.id, AccountTransaction.is_void == False
     ).scalar() or 0
 
-    # Fetch ALL rows in window (chronological asc) so we can compute running balance
-    rows_asc = q.order_by(AccountTransaction.date_posted.asc(), AccountTransaction.id.asc()).all()
+    # Running balances include *all* active movements, even when the displayed
+    # rows are narrowed by search/type filters.
+    all_period_rows = AccountTransaction.query.filter(
+        or_(AccountTransaction.from_account_id == account.id, AccountTransaction.to_account_id == account.id),
+        AccountTransaction.date_posted >= date_from,
+        AccountTransaction.date_posted < date_to_excl,
+    ).order_by(AccountTransaction.date_posted.asc(), AccountTransaction.id.asc()).all()
     running = opening_balance
+    running_by_id = {}
+    for row in all_period_rows:
+        if not row.is_void:
+            if row.to_account_id == account.id:
+                running += float(row.amount or 0)
+            if row.from_account_id == account.id:
+                running -= float(row.amount or 0)
+        running_by_id[row.id] = running
+
+    rows_asc = q.order_by(AccountTransaction.date_posted.asc(), AccountTransaction.id.asc()).all()
     enriched = []
     for r in rows_asc:
         delta = 0.0
@@ -194,8 +240,7 @@ def account_ledger(account_id):
                 delta += float(r.amount or 0)
             if r.from_account_id == account.id:
                 delta -= float(r.amount or 0)
-        running += delta
-        enriched.append({'tx': r, 'delta': delta, 'running': running})
+        enriched.append({'tx': r, 'delta': delta, 'running': running_by_id.get(r.id)})
 
     enriched.reverse()  # display newest first
 
@@ -205,7 +250,7 @@ def account_ledger(account_id):
     end = start + per_page
     page_rows = enriched[start:end]
 
-    types = ['Receipt', 'Payment', 'Transfer', 'Supplier Payment', 'Expense', 'Loss', 'Adjustment']
+    types = ['Receipt', 'Refund', 'Payment', 'Transfer', 'Supplier Payment', 'Expense', 'Loss', 'Adjustment', 'Reconciliation Loss', 'Reconciliation Excess']
 
     return render_template('accounts/account_ledger.html', account=account, page_rows=page_rows,
                            opening_balance=opening_balance, period_in=period_in, period_out=period_out,
@@ -240,8 +285,15 @@ def account_data(account_id):
 @login_required
 def edit_account(account_id):
     """Edit an account's metadata. Balance changes are recorded as Adjustment transactions."""
+    _deny_account_master_mutation()
     a = Account.query.get_or_404(account_id)
     try:
+        before = {
+            'id': a.id, 'name': a.name, 'category': a.category,
+            'source_category': a.source_category, 'account_type': a.account_type,
+            'balance': _money_round(a.balance), 'is_active': bool(a.is_active),
+            'bank_name': a.bank_name, 'account_number': a.account_number, 'note': a.note,
+        }
         name = (request.form.get('name') or '').strip()
         category = (request.form.get('category') or '').strip().lower()
         source_category = (request.form.get('source_category') or '').strip()
@@ -284,33 +336,42 @@ def edit_account(account_id):
             a.branch_code = None
 
         if new_balance_raw != '':
-            try:
-                new_balance = float(new_balance_raw)
-            except ValueError:
-                raise ValueError('Balance must be a valid number.')
-            old_balance = float(a.balance or 0)
-            diff = round(new_balance - old_balance, 2)
-            if abs(diff) > 0.001:
-                # Record as adjustment transaction so the trail shows it
-                if diff > 0:
-                    adj = AccountTransaction(
-                        from_account_id=None, to_account_id=a.id, amount=abs(diff),
-                        description='Balance adjustment (manual edit)',
-                        note=f'Adjusted from Rs. {old_balance:.2f} to Rs. {new_balance:.2f}',
-                        transaction_type='Adjustment', date_posted=pk_now()
-                    )
-                else:
-                    adj = AccountTransaction(
-                        from_account_id=a.id, to_account_id=None, amount=abs(diff),
-                        description='Balance adjustment (manual edit)',
-                        note=f'Adjusted from Rs. {old_balance:.2f} to Rs. {new_balance:.2f}',
-                        transaction_type='Adjustment', date_posted=pk_now()
-                    )
+            from utils.money import from_minor, to_minor
+            from app.services.payments_crud import _assert_period_open
+            old_minor = int(a.balance_minor) if getattr(a, 'balance_minor', None) is not None else to_minor(a.balance or 0)
+            new_minor = to_minor(new_balance_raw, field='Balance')
+            diff_minor = new_minor - old_minor
+            if diff_minor:
+                _assert_period_open(a.id, pk_now(), operation='manually adjusted')
+                adj = AccountTransaction(
+                    from_account_id=(a.id if diff_minor < 0 else None),
+                    to_account_id=(a.id if diff_minor > 0 else None),
+                    amount=float(from_minor(abs(diff_minor))), amount_minor=abs(diff_minor),
+                    description='Balance adjustment (manual edit)',
+                    note=(f'Adjusted from Rs. {float(from_minor(old_minor)):.2f} '
+                          f'to Rs. {float(from_minor(new_minor)):.2f}'),
+                    transaction_type='Adjustment', source_type='Account', source_id=a.id,
+                    created_by=getattr(current_user, 'username', None), date_posted=pk_now()
+                )
                 db.session.add(adj)
-                a.balance = new_balance
+                a.balance_minor = new_minor
+                a.balance = float(from_minor(new_minor))
 
+        a.updated_by = getattr(current_user, 'username', None)
+        a.revision = int(getattr(a, 'revision', None) or 1) + 1
+        from utils.accounting_audit import record_accounting_audit
+        after = {
+            'id': a.id, 'name': a.name, 'category': a.category,
+            'source_category': a.source_category, 'account_type': a.account_type,
+            'balance': _money_round(a.balance), 'is_active': bool(a.is_active),
+            'bank_name': a.bank_name, 'account_number': a.account_number, 'note': a.note,
+        }
+        record_accounting_audit(
+            current_user, action='Edit', entity_type='Account', entity_id=a.id,
+            before=before, after=after, amount_before=before['balance'], amount_after=after['balance'],
+            account_before_id=a.id, account_after_id=a.id, reason=note,
+        )
         db.session.commit()
-        audit_log(current_user, 'account.update', f'id={a.id}, name={a.name}')
         flash('Account updated successfully.', 'success')
     except ValueError as exc:
         db.session.rollback()
@@ -327,10 +388,20 @@ def edit_account(account_id):
 @login_required
 def toggle_account(account_id):
     """Soft-deactivate / reactivate an account (never corrupts history)."""
+    _deny_account_master_mutation()
     a = Account.query.get_or_404(account_id)
+    before = {'id': a.id, 'name': a.name, 'is_active': bool(a.is_active)}
     a.is_active = not bool(a.is_active)
+    a.updated_by = getattr(current_user, 'username', None)
+    a.revision = int(getattr(a, 'revision', None) or 1) + 1
+    from utils.accounting_audit import record_accounting_audit
+    record_accounting_audit(
+        current_user, action='Activate' if a.is_active else 'Suspend',
+        entity_type='Account', entity_id=a.id, before=before,
+        after={'id': a.id, 'name': a.name, 'is_active': bool(a.is_active)},
+        account_before_id=a.id, account_after_id=a.id,
+    )
     db.session.commit()
-    audit_log(current_user, 'account.toggle', f'id={a.id}, name={a.name}, active={a.is_active}')
     flash(f'Account {"reactivated" if a.is_active else "deactivated"}.', 'success')
     return redirect(url_for('accounts.manage_accounts'))
 
@@ -338,6 +409,7 @@ def toggle_account(account_id):
 @accounts_bp.route('/<int:account_id>/delete', methods=['POST'])
 @login_required
 def delete_account(account_id):
+    _deny_account_master_mutation()
     """Delete an account safely.
 
     Accounts that are referenced by any transaction/payment (voided or not) are
@@ -345,23 +417,44 @@ def delete_account(account_id):
     integrity is preserved.  Only unreferenced accounts are hard-deleted.
     """
     a = Account.query.get_or_404(account_id)
-    has_tx = AccountTransaction.query.filter(
-        or_(AccountTransaction.from_account_id == a.id, AccountTransaction.to_account_id == a.id)
-    ).count() > 0
-    has_client_payments = Payment.query.filter_by(payment_account_id=a.id).count() > 0
-    has_supplier_payments = SupplierPayment.query.filter_by(payment_account_id=a.id).count() > 0
-
-    if has_tx or has_client_payments or has_supplier_payments:
-        a.is_active = False
-        db.session.commit()
-        audit_log(current_user, 'account.delete.archive', f'id={a.id}, name={a.name}, reason=has_historical_transactions')
-        flash('Account has historical transactions and was archived (deactivated) to preserve accounting history.', 'warning')
-    else:
-        name = a.name
-        db.session.delete(a)
-        db.session.commit()
-        audit_log(current_user, 'account.delete', f'id={account_id}, name={name}')
-        flash('Account deleted.', 'success')
+    before = {'id': a.id, 'name': a.name, 'balance': _money_round(a.balance), 'is_active': bool(a.is_active)}
+    try:
+        # Inspect every declared FK to account.id (payments, transactions, GRNs,
+        # sales, rentals, cash-flow entries, reconciliations, etc.) rather than
+        # maintaining an incomplete hand-written list.
+        reference_count = 0
+        for table in db.metadata.sorted_tables:
+            for column in table.columns:
+                if any(fk.target_fullname == 'account.id' for fk in column.foreign_keys):
+                    reference_count += int(db.session.query(func.count()).select_from(table).filter(column == a.id).scalar() or 0)
+        from utils.accounting_audit import record_accounting_audit
+        if reference_count:
+            a.is_active = False
+            a.updated_by = getattr(current_user, 'username', None)
+            a.revision = int(getattr(a, 'revision', None) or 1) + 1
+            record_accounting_audit(
+                current_user, action='Delete', entity_type='Account', entity_id=a.id,
+                before=before, after={**before, 'is_active': False, 'archived': True,
+                                      'historical_references': reference_count},
+                amount_before=before['balance'], amount_after=before['balance'],
+                account_before_id=a.id, account_after_id=a.id,
+                reason='Archived because historical references exist',
+            )
+            db.session.commit()
+            flash('Account has historical records and was safely archived. History and balances were preserved.', 'warning')
+        else:
+            record_accounting_audit(
+                current_user, action='Delete', entity_type='Account', entity_id=a.id,
+                before=before, after={'deleted': True}, amount_before=before['balance'], amount_after=0,
+                account_before_id=a.id, reason='Unreferenced account hard-deleted',
+            )
+            db.session.delete(a)
+            db.session.commit()
+            flash('Unreferenced account deleted.', 'success')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Delete account failed')
+        flash(f'Unable to delete account safely: {exc}', 'danger')
     return redirect(url_for('accounts.manage_accounts'))
 
 
@@ -371,17 +464,32 @@ def delete_account(account_id):
 @login_required
 def reconciliations():
     """List of per-account reconciliation records (immutable audit history)."""
-    page = request.args.get('page', 1, type=int)
-    per_page = 50
+    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    per_page = min(max(request.args.get('per_page', 50, type=int) or 50, 10), 100)
+    account_id_f = request.args.get('account_id', type=int)
+    status_f = (request.args.get('status') or '').strip()
+    date_from, date_to_excl = _parse_date_range(default_days=365)
     from models import AccountReconciliation
 
-    q = AccountReconciliation.query
+    q = AccountReconciliation.query.filter(
+        AccountReconciliation.reconciliation_date >= date_from,
+        AccountReconciliation.reconciliation_date < date_to_excl,
+    )
+    if account_id_f:
+        q = q.filter(AccountReconciliation.account_id == account_id_f)
+    if status_f:
+        q = q.filter(AccountReconciliation.difference_type == status_f)
     total_count = q.count()
     recs = q.order_by(
         AccountReconciliation.reconciliation_date.desc(),
         AccountReconciliation.id.desc()
-    ).paginate(page=page, per_page=per_page)
-    return render_template('accounts/reconciliations.html', recs=recs, total_count=total_count)
+    ).paginate(page=page, per_page=per_page, error_out=False)
+    return render_template(
+        'accounts/reconciliations.html', recs=recs, total_count=total_count,
+        accounts=Account.query.order_by(Account.name.asc()).all(),
+        account_id_f=account_id_f, status_f=status_f,
+        date_from=date_from, date_to=date_to_excl - timedelta(days=1), per_page=per_page,
+    )
 
 
 @accounts_bp.route('/<int:account_id>/reconcile', methods=['GET', 'POST'])

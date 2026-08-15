@@ -53,7 +53,7 @@ def material_returns_page():
         page=page, per_page=per_page, error_out=False
     )
     clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
-    materials = Material.query.order_by(Material.name.asc()).all()
+    materials = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     next_auto = peek_next_bill_no(AUTO_BILL_NAMESPACES['MATERIAL_RETURN'])
 
     edit_return = None
@@ -61,6 +61,15 @@ def material_returns_page():
         edit_return = MaterialReturn.query.options(selectinload(MaterialReturn.items)).get(int(edit_id))
         if edit_return and edit_return.is_void:
             edit_return = None
+    # Historical inactive materials remain visible while editing their original
+    # return, but are never offered in the new-return selector.
+    if edit_return:
+        active_ids = {m.id for m in materials}
+        historical_names = {(item.material_name or '').strip().lower() for item in edit_return.items}
+        historical = Material.query.filter(
+            func.lower(func.trim(Material.name)).in_(historical_names)
+        ).order_by(Material.name.asc()).all() if historical_names else []
+        materials.extend([m for m in historical if m.id not in active_ids])
     return render_template(
         'material_returns.html',
         returns=returns_pagination.items,
@@ -85,8 +94,8 @@ def add_material_return():
     try:
         client_input = (request.form.get('client_code') or request.form.get('client_name') or '').strip()
         client = get_client_by_input(client_input)
-        if not client:
-            flash('Select a valid client for material return.', 'danger')
+        if not client or not client.is_active:
+            flash('Select a valid active client for material return.', 'danger')
             return redirect(url_for('material_returns_page'))
 
         date_str = (request.form.get('date') or '').strip()
@@ -112,8 +121,8 @@ def add_material_return():
             if not mat_txt:
                 continue
             mat_obj = get_material_by_input(mat_txt)
-            if not mat_obj:
-                flash(f'Material "{mat_txt}" was not found.', 'danger')
+            if not mat_obj or not mat_obj.is_active:
+                flash(f'Material "{mat_txt}" was not found or is suspended.', 'danger')
                 return redirect(url_for('material_returns_page'))
             qty_val = _to_float_or_zero(qty_raw)
             if qty_val <= 0:
@@ -178,8 +187,12 @@ def add_material_return():
 
         bill_ref = ret.manual_bill_no or ret.auto_bill_no or f"RTN-{ret.id}"
         pay = Payment(
+            client_id=client.id,
             client_name=client.name,
             amount=total_amount,
+            payment_type='Material Return',
+            source_type='MaterialReturn',
+            source_id=ret.id,
             method='Material Return',
             manual_bill_no='',
             auto_bill_no=get_next_bill_no(AUTO_BILL_NAMESPACES['PAYMENT']),
@@ -281,8 +294,9 @@ def edit_material_return(id):
             if not mat_txt:
                 continue
             mat_obj = get_material_by_input(mat_txt)
-            if not mat_obj:
-                flash(f'Material "{mat_txt}" was not found.', 'danger')
+            historical_names = {(it.material_name or '').strip().lower() for it in (ret.items or [])}
+            if not mat_obj or (not mat_obj.is_active and mat_obj.name.strip().lower() not in historical_names):
+                flash(f'Material "{mat_txt}" was not found or is suspended.', 'danger')
                 return redirect(url_for('material_returns_page', edit_id=ret.id))
             qty_val = _to_float_or_zero(qty_raw)
             if qty_val <= 0:
@@ -395,6 +409,10 @@ def edit_material_return(id):
 
         pay = db.session.get(Payment, ret.payment_id) if ret.payment_id else None
         if pay and not pay.is_void:
+            pay.client_id = client.id
+            pay.payment_type = 'Material Return'
+            pay.source_type = 'MaterialReturn'
+            pay.source_id = ret.id
             pay.amount = total_amount
             pay.date_posted = posted_at
             pay.note = (pay.note or '').split('|')[0].strip() or pay.note

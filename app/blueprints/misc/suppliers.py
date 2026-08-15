@@ -135,225 +135,119 @@ def download_supplier_payment(payment_id):
 @bp.route('/add_supplier_payment', methods=['POST'])
 @login_required
 def add_supplier_payment():
-    flash('Supplier payment posting is disabled. Use Accounts → New Transaction (Pay → Supplier).', 'danger')
-    return redirect(url_for('accounts.dashboard'))
+    """Compatibility endpoint delegating to the canonical Accounts service."""
+    if not _user_can('can_manage_suppliers'):
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
     supplier_id = request.form.get('supplier_id')
-    if not supplier_id:
-        flash('Supplier is required', 'danger')
-        return_to = (request.form.get('return_to') or '').strip().lower()
-        if return_to == 'payments':
-            return redirect(url_for('payments_page', party='supplier'))
-        return redirect(url_for('suppliers'))
-    amount = float(request.form.get('amount', 0) or 0)
-    method = request.form.get('method', 'Cash')
-    payment_account_id = request.form.get('payment_account_id')
-    note = request.form.get('note', '').strip()
-    date_str = request.form.get('date')
-    bank_name = request.form.get('bank_name', '').strip()
-    account_name = request.form.get('account_name', '').strip()
-    account_no = request.form.get('account_no', '').strip()
-    manual_bill_raw = request.form.get('manual_bill_no', '').strip()
-    manual_bill_no = normalize_manual_bill(manual_bill_raw) if manual_bill_raw else ''
-    date_posted = resolve_posted_datetime(date_str)
-    auto_bill_no = get_next_bill_no(AUTO_BILL_NAMESPACES['SUPPLIER_PAYMENT'])
-
-    expected_category = _payment_expected_account_category(method)
-    pay_account = None
-    if payment_account_id:
-        try:
-            payment_account_id = int(payment_account_id)
-        except Exception:
-            payment_account_id = None
-
-    if amount > 0 and expected_category in ['cash', 'bank'] and not payment_account_id:
-        flash('Select a cash/bank account to post this supplier payment into Accounts.', 'danger')
-        return_to = (request.form.get('return_to') or '').strip().lower()
-        if return_to == 'payments':
-            return redirect(url_for('payments_page', party='supplier'))
-        return redirect(url_for('suppliers'))
-
-    if payment_account_id:
-        pay_account = Account.query.get(payment_account_id)
-        if not pay_account or bool(getattr(pay_account, 'is_active', True)) is False:
-            flash('Please select a valid payment account.', 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier'))
-            return redirect(url_for('suppliers'))
-        if expected_category and (pay_account.category or '').strip().lower() != expected_category:
-            flash(f"Selected payment account must be a {expected_category} account for method '{method}'.", 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier'))
-            return redirect(url_for('suppliers'))
-        if float(pay_account.balance or 0) + 0.00001 < float(amount or 0):
-            flash('Insufficient balance in selected payment account.', 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier'))
-            return redirect(url_for('suppliers'))
-
-        if expected_category == 'bank':
-            bank_name = pay_account.bank_name or ''
-            account_name = pay_account.account_holder_name or pay_account.name or ''
-            account_no = pay_account.account_number or ''
-        else:
-            bank_name = ''
-            account_name = pay_account.name if pay_account else (account_name or '')
-            account_no = ''
-
-    if manual_bill_no:
-        conflict = find_bill_conflict(manual_bill_no)
-        if conflict:
-            flash(f"Manual bill '{manual_bill_no}' already exists in {conflict[0]} #{conflict[1]}.", 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier'))
-            return redirect(url_for('suppliers'))
-        
-    payment = SupplierPayment(
-        supplier_id=int(supplier_id), 
-        amount=amount, 
-        method=method, 
-        note=note, 
-        date_posted=date_posted,
-        bank_name=bank_name,
-        account_name=account_name,
-        account_no=account_no,
-        payment_account_id=(payment_account_id if (amount > 0 and expected_category in ['cash', 'bank']) else None),
-        manual_bill_no=manual_bill_no,
-        auto_bill_no=auto_bill_no
-    )
-    db.session.add(payment)
-    db.session.flush()
-    _sync_supplier_payment_accounting(payment)
-    db.session.commit()
-    flash('Supplier payment recorded', 'success')
+    try:
+        from app.services.payments_crud import save_supplier_payment
+        payment, _ = save_supplier_payment(
+            supplier_id=supplier_id,
+            amount=request.form.get('amount', 0),
+            method=request.form.get('method', 'Cash'),
+            payment_account_id=request.form.get('payment_account_id'),
+            manual_bill_no=request.form.get('manual_bill_no', ''),
+            date_posted=request.form.get('date', ''),
+            note=request.form.get('note', ''),
+            idempotency_key=request.form.get('idempotency_key'),
+            actor=current_user,
+        )
+        db.session.commit()
+        flash('Supplier payment recorded.', 'success')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logging.exception('Supplier payment create failed')
+        flash(f'Unable to record supplier payment: {exc}', 'danger')
     return_to = (request.form.get('return_to') or '').strip().lower()
     if return_to == 'payments':
-        return redirect(url_for('payments_page', party='supplier'))
-    return redirect(url_for('supplier_ledger', id=supplier_id))
+        return redirect(url_for('accounts.supplier_payments'))
+    if str(supplier_id or '').isdigit():
+        return redirect(url_for('supplier_ledger', id=int(supplier_id)))
+    return redirect(url_for('suppliers'))
 
 
 @bp.route('/edit_supplier_payment/<int:id>', methods=['POST'])
 @login_required
 def edit_supplier_payment(id):
-    flash('Supplier payment editing is disabled. Use Accounts → Audit / Ledger actions instead.', 'danger')
-    return redirect(url_for('accounts.dashboard'))
+    """Compatibility endpoint using exactly the same service as Create/Edit."""
+    if not _user_can('can_manage_suppliers'):
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
     payment = SupplierPayment.query.get_or_404(id)
-    old_account_id = getattr(payment, 'payment_account_id', None)
-    old_amount = float(getattr(payment, 'amount', 0) or 0)
-    payment.amount = float(request.form.get('amount', 0) or 0)
-    payment.method = request.form.get('method', 'Cash')
-    payment_account_id = request.form.get('payment_account_id')
-    payment.note = request.form.get('note', '').strip()
-    date_str = request.form.get('date')
-    if date_str:
-        payment.date_posted = resolve_posted_datetime(date_str, fallback_dt=payment.date_posted or pk_now())
-        
-    payment.bank_name = request.form.get('bank_name', '').strip()
-    payment.account_name = request.form.get('account_name', '').strip()
-    payment.account_no = request.form.get('account_no', '').strip()
-
-    expected_category = _payment_expected_account_category(payment.method)
-
-    if payment_account_id:
-        try:
-            payment_account_id = int(payment_account_id)
-        except Exception:
-            payment_account_id = None
-
-    if float(payment.amount or 0) > 0 and expected_category in ['cash', 'bank'] and not payment_account_id:
-        flash('Select a cash/bank account to post this supplier payment into Accounts.', 'danger')
-        return_to = (request.form.get('return_to') or '').strip().lower()
-        if return_to == 'payments':
-            return redirect(url_for('payments_page', party='supplier', show='all'))
-        return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-
-    pay_account = None
-    if payment_account_id:
-        pay_account = Account.query.get(payment_account_id)
-        if not pay_account or bool(getattr(pay_account, 'is_active', True)) is False:
-            flash('Please select a valid payment account.', 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier', show='all'))
-            return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-        if expected_category and (pay_account.category or '').strip().lower() != expected_category:
-            flash(f"Selected payment account must be a {expected_category} account for method '{payment.method}'.", 'danger')
-            return_to = (request.form.get('return_to') or '').strip().lower()
-            if return_to == 'payments':
-                return redirect(url_for('payments_page', party='supplier', show='all'))
-            return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-
-        new_amount = float(payment.amount or 0)
-        if payment_account_id == old_account_id:
-            delta = new_amount - float(old_amount or 0)
-            if delta > 0 and float(pay_account.balance or 0) + 0.00001 < delta:
-                flash('Insufficient balance in selected payment account for the increased amount.', 'danger')
-                return_to = (request.form.get('return_to') or '').strip().lower()
-                if return_to == 'payments':
-                    return redirect(url_for('payments_page', party='supplier', show='all'))
-                return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-        else:
-            if new_amount > 0 and float(pay_account.balance or 0) + 0.00001 < new_amount:
-                flash('Insufficient balance in selected payment account.', 'danger')
-                return_to = (request.form.get('return_to') or '').strip().lower()
-                if return_to == 'payments':
-                    return redirect(url_for('payments_page', party='supplier', show='all'))
-                return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-
-        if expected_category == 'bank':
-            payment.bank_name = pay_account.bank_name or ''
-            payment.account_name = pay_account.account_holder_name or pay_account.name or ''
-            payment.account_no = pay_account.account_number or ''
-        else:
-            payment.bank_name = ''
-            payment.account_name = pay_account.name if pay_account else (payment.account_name or '')
-            payment.account_no = ''
-
-    payment.payment_account_id = (payment_account_id if (float(payment.amount or 0) > 0 and expected_category in ['cash', 'bank']) else None)
-    _sync_supplier_payment_accounting(payment)
-    
-    db.session.commit()
-    flash('Payment updated', 'success')
-    return_to = (request.form.get('return_to') or '').strip().lower()
-    if return_to == 'payments':
-        return redirect(url_for('payments_page', party='supplier', show='all'))
-    return redirect(url_for('supplier_ledger', id=payment.supplier_id))
+    try:
+        from app.services.payments_crud import save_supplier_payment
+        save_supplier_payment(
+            payment_id=id,
+            supplier_id=request.form.get('supplier_id') or payment.supplier_id,
+            amount=request.form.get('amount', payment.amount),
+            method=request.form.get('method', payment.method or 'Cash'),
+            payment_account_id=request.form.get('payment_account_id') or payment.payment_account_id,
+            manual_bill_no=request.form.get('manual_bill_no', payment.manual_bill_no or ''),
+            date_posted=request.form.get('date', ''),
+            note=request.form.get('note', payment.note or ''),
+            expected_revision=request.form.get('revision'),
+            actor=current_user,
+        )
+        db.session.commit()
+        flash('Supplier payment updated. All balances were recalculated.', 'success')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logging.exception('Supplier payment edit failed')
+        flash(f'Unable to update supplier payment: {exc}', 'danger')
+    return redirect(url_for('accounts.supplier_payments', show='all'))
 
 
 @bp.route('/delete_supplier_payment/<int:id>', methods=['POST'])
 @login_required
 def delete_supplier_payment(id):
+    """Compatibility soft-delete; never hard-deletes accounting history."""
+    if not _user_can('can_manage_suppliers'):
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
     payment = SupplierPayment.query.get_or_404(id)
-    payment.is_void = True
-    _sync_supplier_payment_accounting(payment)
-    marker = f'[SRC:SupplierPayment:{payment.id}]'
-    for tx in AccountTransaction.query.filter(AccountTransaction.note.ilike(f'%{marker}%')).all():
-        db.session.delete(tx)
-    db.session.delete(payment)
-    db.session.commit()
-    flash('Supplier payment deleted', 'success')
-    return_to = (request.form.get('return_to') or '').strip().lower()
-    if return_to == 'payments':
-        return redirect(url_for('payments_page', party='supplier', show='all'))
-    return redirect(url_for('supplier_ledger', id=payment.supplier_id))
+    try:
+        from app.services.payments_crud import delete_supplier_payment as do_delete
+        if do_delete(payment, actor=current_user):
+            db.session.commit()
+            flash('Supplier payment deleted and accounting effects reversed.', 'success')
+        else:
+            flash('Supplier payment is already deleted.', 'warning')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logging.exception('Supplier payment delete failed')
+        flash(f'Unable to delete supplier payment: {exc}', 'danger')
+    return redirect(url_for('accounts.supplier_payments', show='all'))
 
 
 @bp.route('/restore_supplier_payment/<int:id>', methods=['POST'])
 @login_required
 def restore_supplier_payment(id):
-    flash('Supplier payment restore is disabled. Use Accounts → Audit / Ledger actions instead.', 'danger')
-    return redirect(url_for('accounts.dashboard'))
+    if not _user_can('can_manage_suppliers'):
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
     payment = SupplierPayment.query.get_or_404(id)
-    payment.is_void = False
-    _sync_supplier_payment_accounting(payment)
-    db.session.commit()
-    flash('Supplier payment restored', 'success')
-    return_to = (request.form.get('return_to') or '').strip().lower()
-    if return_to == 'payments':
-        return redirect(url_for('payments_page', party='supplier', show='all'))
-    return redirect(url_for('supplier_ledger', id=payment.supplier_id))
-
-
+    try:
+        from app.services.payments_crud import restore_supplier_payment as do_restore
+        if do_restore(payment, actor=current_user):
+            db.session.commit()
+            flash('Supplier payment restored and balances re-applied.', 'success')
+        else:
+            flash('Supplier payment is already active.', 'warning')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logging.exception('Supplier payment restore failed')
+        flash(f'Unable to restore supplier payment: {exc}', 'danger')
+    return redirect(url_for('accounts.supplier_payments', show='all'))

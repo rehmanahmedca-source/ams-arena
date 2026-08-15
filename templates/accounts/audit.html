@@ -84,10 +84,11 @@
                         {% if tx.note %}<div class="small text-muted">{{ tx.note }}</div>{% endif %}
                     </td>
                     <td class="text-end">
-                        {% if not tx.is_void %}
-                        <form method="POST" action="{{ url_for('accounts.void_transaction', tx_id=tx.id) }}" style="display:inline" onsubmit="return confirm('Permanently delete this transaction? Account balances will be reversed.');">
-                            <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-x-octagon"></i></button>
+                        {% if not tx.is_void and not tx.reconciliation_id and tx.source_type != 'AccountReconciliation' %}
+                        <form method="POST" action="{{ url_for('accounts.void_transaction', tx_id=tx.id) }}" style="display:inline" onsubmit="return confirm('Reverse this transaction? The original row and audit history will be retained.');">
+                            <button class="btn btn-sm btn-outline-danger" title="Reverse / soft-delete"><i class="bi bi-arrow-counterclockwise"></i></button>
                         </form>
+                        {% elif tx.reconciliation_id %}<span class="badge bg-secondary">Immutable</span>
                         {% endif %}
                     </td>
                 </tr>
@@ -105,6 +106,30 @@
             <li class="page-item {% if not rows.has_next %}disabled{% endif %}"><a class="page-link" href="{{ url_for('accounts.audit_trail', page=rows.next_num, **{'from': date_from.strftime('%Y-%m-%d'),'to': date_to.strftime('%Y-%m-%d'),'q': search,'type': type_f,'account_id': account_id_f or '','show_voided': '1' if show_voided else ''}) }}">Next</a></li>
         </ul></nav>
         {% endif %}
+    </div>
+
+    <div class="led-card mt-4">
+        <div class="p-3 border-bottom"><h5 class="mb-1"><i class="bi bi-fingerprint me-2 text-info"></i>Structured Financial Operations</h5><div class="small text-muted">Atomic before/after audit events committed with each create, edit, delete, restore, suspend, activation, adjustment, and reconciliation.</div></div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead><tr><th>When / User</th><th>Action</th><th>Entity</th><th>Before</th><th>After</th><th>Reason / Session</th></tr></thead>
+                <tbody>{% for event in audit_rows.items %}
+                    <tr>
+                        <td class="small">{{ event.created_at.strftime('%Y-%m-%d %H:%M:%S') if event.created_at else '' }}<div class="text-muted">{{ event.username or 'System' }}</div></td>
+                        <td><span class="tx-type-badge tt-{{ event.action }}">{{ event.action }}</span><div class="small text-muted">{{ event.module }}</div></td>
+                        <td><strong>{{ event.entity_type }}</strong> #{{ event.entity_id or '—' }}</td>
+                        <td><code class="small text-wrap d-block" style="max-width:360px;max-height:100px;overflow:auto">{{ event.before_json or '—' }}</code></td>
+                        <td><code class="small text-wrap d-block" style="max-width:360px;max-height:100px;overflow:auto">{{ event.after_json or '—' }}</code></td>
+                        <td class="small">{{ event.reason or '—' }}<div class="text-muted">IP {{ event.ip_address or '—' }} · Session {{ event.session_id or '—' }}</div></td>
+                    </tr>
+                {% else %}<tr><td colspan="6" class="text-center text-muted py-4">No structured financial operations match this period.</td></tr>{% endfor %}</tbody>
+            </table>
+        </div>
+        {% if audit_rows.pages > 1 %}<nav class="p-3"><ul class="pagination pagination-sm justify-content-center mb-0">
+            <li class="page-item {% if not audit_rows.has_prev %}disabled{% endif %}"><a class="page-link" href="{{ url_for('accounts.audit_trail', audit_page=audit_rows.prev_num or 1, page=rows.page, **{'from':date_from.strftime('%Y-%m-%d'),'to':date_to.strftime('%Y-%m-%d'),'q':search,'type':type_f,'account_id':account_id_f or '','show_voided':'1' if show_voided else ''}) }}">Previous audit events</a></li>
+            <li class="page-item disabled"><span class="page-link">{{ audit_rows.page }} / {{ audit_rows.pages }}</span></li>
+            <li class="page-item {% if not audit_rows.has_next %}disabled{% endif %}"><a class="page-link" href="{{ url_for('accounts.audit_trail', audit_page=audit_rows.next_num or audit_rows.pages, page=rows.page, **{'from':date_from.strftime('%Y-%m-%d'),'to':date_to.strftime('%Y-%m-%d'),'q':search,'type':type_f,'account_id':account_id_f or '','show_voided':'1' if show_voided else ''}) }}">Next audit events</a></li>
+        </ul></nav>{% endif %}
     </div>
 </div>
 {% endblock %}

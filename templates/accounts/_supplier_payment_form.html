@@ -7,6 +7,8 @@
 <form id="supplierPaymentForm" class="modal-content border-secondary ui-helper-form" style="background: #1e293b;"
       action="{{ url_for('accounts.supplier_payment_save') }}" method="POST" enctype="multipart/form-data">
     <input type="hidden" name="payment_id" id="spPaymentId" value="">
+    <input type="hidden" name="revision" id="spRevision" value="">
+    <input type="hidden" name="idempotency_key" id="spIdempotencyKey" value="">
     <input type="hidden" name="show" value="{{ show_mode }}">
     <div class="modal-header">
         <h5 class="modal-title text-danger" id="supplierPaymentModalTitle"><i class="bi bi-truck me-2"></i>New Supplier Payment</h5>
@@ -35,7 +37,7 @@
             <div class="col-md-6">
                 {{ entity_combobox('spAccount', account_options, code_attr='id', name_attr='label',
                                    value_input_id='payment_account_id',
-                                   label='Pay From Account', placeholder='Search cash/bank account…', required=True) }}
+                                   label='Pay From Account', placeholder='Search by account, bank, or number…', required=True) }}
             </div>
             <div class="col-md-6">
                 <label class="form-label fw-semibold">Bill / Voucher Reference</label>

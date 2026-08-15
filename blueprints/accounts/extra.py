@@ -53,11 +53,30 @@ def audit_trail():
         AccountTransaction.from_account_id.isnot(None), AccountTransaction.is_void == False
     ).scalar() or 0
 
-    rows = q.order_by(AccountTransaction.date_posted.desc(), AccountTransaction.id.desc()).paginate(page=page, per_page=per_page)
-    types = ['Receipt', 'Payment', 'Transfer', 'Supplier Payment', 'Expense', 'Loss', 'Adjustment']
-    accounts = _active_accounts().order_by(Account.name.asc()).all()
+    rows = q.order_by(AccountTransaction.date_posted.desc(), AccountTransaction.id.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    types = ['Receipt', 'Refund', 'Payment', 'Transfer', 'Supplier Payment', 'Expense', 'Loss', 'Adjustment', 'Reconciliation Loss', 'Reconciliation Excess']
+    accounts = Account.query.order_by(Account.name.asc(), Account.id.asc()).all()
 
-    return render_template('accounts/audit.html', rows=rows, accounts=accounts, types=types,
+    audit_page = max(request.args.get('audit_page', 1, type=int) or 1, 1)
+    audit_q = AccountingAuditLog.query.filter(
+        AccountingAuditLog.created_at >= date_from,
+        AccountingAuditLog.created_at < date_to_excl,
+    )
+    if search:
+        like = f'%{search}%'
+        audit_q = audit_q.filter(or_(
+            AccountingAuditLog.username.ilike(like), AccountingAuditLog.action.ilike(like),
+            AccountingAuditLog.entity_type.ilike(like), AccountingAuditLog.before_json.ilike(like),
+            AccountingAuditLog.after_json.ilike(like), AccountingAuditLog.reason.ilike(like),
+        ))
+    audit_rows = audit_q.order_by(AccountingAuditLog.created_at.desc(), AccountingAuditLog.id.desc()).paginate(
+        page=audit_page, per_page=40, error_out=False
+    )
+
+    return render_template('accounts/audit.html', rows=rows, audit_rows=audit_rows,
+                           accounts=accounts, types=types,
                            date_from=date_from, date_to=date_to_excl - timedelta(days=1),
                            search=search, type_f=type_f, account_id_f=account_id_f,
                            show_voided=show_voided, total_in=total_in, total_out=total_out)

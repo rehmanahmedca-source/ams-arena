@@ -3,8 +3,14 @@ from ._common import *  # noqa
 @bp.route('/edit_client/<int:id>', methods=['POST'])
 @login_required
 def edit_client(id):
+    if not _user_can('can_manage_clients'):
+        flash('Permission denied', 'danger')
+        return redirect(url_for('clients'))
     c = db.session.get(Client, id)
     if c:
+        before = {'id': c.id, 'code': c.code, 'name': c.name, 'phone': c.phone,
+                  'address': c.address, 'opening_balance': c.opening_balance,
+                  'is_active': bool(c.is_active)}
         old_code = c.code
         old_name = c.name
         new_code = request.form.get('code', '').strip()
@@ -36,7 +42,8 @@ def edit_client(id):
                 'client_name': new_name,
                 'client_code': new_code
             })
-            Payment.query.filter_by(client_name=old_name).update({'client_name': new_name})
+            # Payment.client_id is the stable relationship; keep client_name as
+            # the historical display snapshot instead of rewriting financial history.
             WaiveOff.query.filter_by(client_name=old_name).update({
                 'client_name': new_name,
                 'client_code': new_code
@@ -75,6 +82,15 @@ def edit_client(id):
             fallback_dt=(c.opening_balance_date or c.created_at)
         )
 
+        from utils.accounting_audit import record_accounting_audit
+        after = {'id': c.id, 'code': c.code, 'name': c.name, 'phone': c.phone,
+                 'address': c.address, 'opening_balance': c.opening_balance,
+                 'is_active': bool(c.is_active)}
+        record_accounting_audit(
+            current_user, action='Edit', entity_type='Client', entity_id=c.id,
+            before=before, after=after, party_before_id=c.id, party_after_id=c.id,
+            reason='Client master updated', module='clients',
+        )
         db.session.commit()
         flash('Client updated', 'success')
     return redirect(url_for('clients'))

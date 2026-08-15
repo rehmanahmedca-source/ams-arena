@@ -61,7 +61,7 @@ def direct_sales_page():
         page=page, per_page=per_page, error_out=False
     )
     sales = sales_pagination.items
-    materials = Material.query.order_by(Material.name.asc()).all()
+    materials = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
     delivery_persons = DeliveryPerson.query.order_by(DeliveryPerson.name.asc()).all()
     # Get GRNs for selection

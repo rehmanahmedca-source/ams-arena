@@ -39,7 +39,10 @@ def financial_ledger(client_id):
 
     # 2. Financial Ledger
     bookings = Booking.query.filter(func.lower(func.trim(Booking.client_name)) == client_name_norm).all()
-    payments = Payment.query.filter(func.lower(func.trim(Payment.client_name)) == client_name_norm).all()
+    payments = Payment.query.filter(or_(
+        Payment.client_id == client.id,
+        and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm),
+    )).all()
     # Use case-insensitive match for Direct Sales to ensure we catch them all
     direct_sales = DirectSale.query.filter(func.lower(func.trim(DirectSale.client_name)) == client_name_norm).all()
 

@@ -7,6 +7,8 @@
 <form id="clientPaymentForm" class="modal-content border-secondary ui-helper-form" style="background: #1e293b;"
       action="{{ url_for('accounts.client_payment_save') }}" method="POST" enctype="multipart/form-data">
     <input type="hidden" name="payment_id" id="cpPaymentId" value="">
+    <input type="hidden" name="revision" id="cpRevision" value="">
+    <input type="hidden" name="idempotency_key" id="cpIdempotencyKey" value="">
     <input type="hidden" name="show" value="{{ show_mode }}">
     <div class="modal-header">
         <h5 class="modal-title text-warning" id="clientPaymentModalTitle"><i class="bi bi-receipt me-2"></i>New Client Payment</h5>
@@ -20,16 +22,25 @@
                                    label='Client', placeholder='Search by name or code…', required=True) }}
             </div>
             <div class="col-md-6">
-                <label class="form-label fw-semibold">Amount <span class="text-danger">*</span></label>
-                <input type="number" step="0.01" min="0" name="amount" id="cpAmount"
-                       class="form-control bg-dark text-white border-secondary" required placeholder="0.00">
+                <label class="form-label fw-semibold">Transaction Type <span class="text-danger">*</span></label>
+                <select name="payment_type" id="cpPaymentType" class="form-select bg-dark text-white border-secondary" required>
+                    <option value="Receipt">Receipt / Payment Received</option>
+                    <option value="Refund">Refund Paid to Client</option>
+                    <option value="Waive-Off">Waive-Off Only</option>
+                </select>
             </div>
             <div class="col-md-6">
+                <label class="form-label fw-semibold"><span id="cpAmountLabel">Amount</span> <span class="text-danger">*</span></label>
+                <input type="number" step="0.01" min="0" name="amount" id="cpAmount"
+                       class="form-control bg-dark text-white border-secondary" required placeholder="0.00">
+                <div class="form-text text-white-50" id="cpAmountHelp">Enter a positive received amount.</div>
+            </div>
+            <div class="col-md-6 cp-discount-field">
                 <label class="form-label fw-semibold">Discount / Waive-off</label>
                 <input type="number" step="0.01" min="0" name="discount" id="cpDiscount"
                        class="form-control bg-dark text-white border-secondary" placeholder="0.00">
             </div>
-            <div class="col-md-6">
+            <div class="col-md-6 cp-discount-field">
                 <label class="form-label fw-semibold">Discount Reason</label>
                 <input type="text" name="discount_reason" id="cpDiscountReason"
                        class="form-control bg-dark text-white border-secondary" placeholder="Required if discount > 0">
@@ -45,7 +56,7 @@
             <div class="col-md-6">
                 {{ entity_combobox('cpAccount', account_options, code_attr='id', name_attr='label',
                                    value_input_id='payment_account_id',
-                                   label='Post to Account', placeholder='Search cash/bank account…', required=True) }}
+                                   label='Cash / Bank Account', placeholder='Search by account, bank, or number…', required=False) }}
             </div>
             <div class="col-md-6">
                 <label class="form-label fw-semibold">Bill / Voucher Reference</label>
@@ -56,9 +67,20 @@
                 <label class="form-label fw-semibold">Transaction Date</label>
                 <input type="date" name="date" id="cpDate" class="form-control bg-dark text-white border-secondary">
             </div>
+            <div class="col-md-6">
+                <label class="form-label fw-semibold">Receipt / Bill Photo</label>
+                <input type="file" name="photo" id="cpPhoto" accept="image/*"
+                       class="form-control bg-dark text-white border-secondary">
+                <div id="cpExistingPhoto" class="form-text text-white-50"></div>
+            </div>
+            <div class="col-md-6">
+                <label class="form-label fw-semibold">Photo URL</label>
+                <input type="url" name="photo_url" id="cpPhotoUrl"
+                       class="form-control bg-dark text-white border-secondary" placeholder="https://…">
+            </div>
             <div class="col-12">
                 <label class="form-label fw-semibold">Note</label>
-                <textarea name="note" id="cpNote" rows="2" class="form-control bg-dark text-white border-secondary"></textarea>
+                <textarea name="note" id="cpNote" rows="2" maxlength="500" class="form-control bg-dark text-white border-secondary"></textarea>
             </div>
         </div>
     </div>

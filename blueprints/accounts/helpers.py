@@ -184,12 +184,12 @@ def _client_due_summary():
             Booking.is_void == False
         ).scalar() or 0
         payment_credit = db.session.query(func.sum(Payment.amount)).filter(
-            func.lower(func.trim(Payment.client_name)) == client_name_norm,
+            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
             Payment.is_void == False,
             Payment.amount >= 0
         ).scalar() or 0
         payment_debit = db.session.query(func.sum(-Payment.amount)).filter(
-            func.lower(func.trim(Payment.client_name)) == client_name_norm,
+            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
             Payment.is_void == False,
             Payment.amount < 0
         ).scalar() or 0
@@ -211,7 +211,7 @@ def _client_due_summary():
             DirectSale.is_void == False
         ).scalar() or 0
         payment_discount = db.session.query(func.sum(Payment.discount)).filter(
-            func.lower(func.trim(Payment.client_name)) == client_name_norm,
+            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
             Payment.is_void == False
         ).scalar() or 0
 

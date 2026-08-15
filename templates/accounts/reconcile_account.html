@@ -24,11 +24,13 @@
         </div>
     </div>
 
-    <div class="row g-3 mb-4">
-        <div class="col-md-4"><div class="card kpi-card kpi-slate"><div class="card-body"><div class="kpi-label">Stored Balance</div><div class="kpi-value">Rs. {{ "%.2f"|format(account.balance or 0) }}</div></div><i class="bi bi-database kpi-icon"></i></div></div>
-        <div class="col-md-4"><div class="card kpi-card kpi-blue"><div class="card-body"><div class="kpi-label">Expected (Ledger)</div><div class="kpi-value">Rs. {{ "%.2f"|format(expected) }}</div></div><i class="bi bi-calculator kpi-icon"></i></div></div>
-        <div class="col-md-4"><div class="card kpi-card kpi-emerald"><div class="card-body"><div class="kpi-label">Difference (Actual − Expected)</div><div class="kpi-value" id="diffPreview">Rs. 0.00</div></div><i class="bi bi-arrow-left-right kpi-icon"></i></div></div>
+    <div class="row g-3 mb-3">
+        <div class="col-md-3"><div class="card kpi-card kpi-slate"><div class="card-body"><div class="kpi-label">Previous Final</div><div class="kpi-value">Rs. {{ "%.2f"|format((recent[0].final_reconciled_balance if recent and recent[0].final_reconciled_balance is not none else (account.opening_balance or 0))) }}</div></div><i class="bi bi-skip-backward kpi-icon"></i></div></div>
+        <div class="col-md-3"><div class="card kpi-card kpi-slate"><div class="card-body"><div class="kpi-label">Stored Balance</div><div class="kpi-value">Rs. {{ "%.2f"|format(account.balance or 0) }}</div></div><i class="bi bi-database kpi-icon"></i></div></div>
+        <div class="col-md-3"><div class="card kpi-card kpi-blue"><div class="card-body"><div class="kpi-label">Expected Closing</div><div class="kpi-value">Rs. {{ "%.2f"|format(expected) }}</div></div><i class="bi bi-calculator kpi-icon"></i></div></div>
+        <div class="col-md-3"><div class="card kpi-card kpi-emerald"><div class="card-body"><div class="kpi-label">Actual − Expected</div><div class="kpi-value" id="diffPreview">Rs. 0.00</div></div><i class="bi bi-arrow-left-right kpi-icon"></i></div></div>
     </div>
+    <div class="alert alert-info py-2 small mb-4"><strong>Carry chain:</strong> previous final reconciled balance → opening balance → period transactions → expected closing → entered actual → transparent loss/excess adjustment → final reconciled balance. Historical transactions are never rewritten.</div>
 
     <div class="row g-4">
         <div class="col-lg-7">

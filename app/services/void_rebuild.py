@@ -416,8 +416,8 @@ def hard_delete_transaction(kind, obj_id):
                 _reverse_account_tx_effect(tx)
             db.session.delete(tx)
         for pay in Payment.query.filter(Payment.note.ilike(f'%{marker}%')).all():
+            # Retain generated payment identity/audit history while reversing it.
             _set_payment_void_state(pay, True)
-            db.session.delete(pay)
         BookingAllocation.query.filter(
             BookingAllocation.booking_item_id.in_(
                 db.session.query(BookingItem.id).filter(BookingItem.booking_id == booking.id)
@@ -430,17 +430,13 @@ def hard_delete_transaction(kind, obj_id):
         db.session.delete(booking)
         deleted = True
     elif kind == 'Payment':
+        # Financial payments are never hard-deleted.  Preserve the stable source
+        # identity, linked (voided) ledger entries, waive-off rows and audit
+        # references while reversing their active effects.
         pay = db.session.get(Payment, obj_id)
         if not pay:
             return False
         _set_payment_void_state(pay, True)
-        WaiveOff.query.filter_by(payment_id=pay.id).delete(synchronize_session=False)
-        marker = f'[SRC:Payment:{pay.id}]'
-        for tx in AccountTransaction.query.filter(AccountTransaction.note.ilike(f'%{marker}%')).all():
-            if not tx.is_void:
-                _reverse_account_tx_effect(tx)
-            db.session.delete(tx)
-        db.session.delete(pay)
         deleted = True
     elif kind == 'DirectSale':
         sale = db.session.get(DirectSale, obj_id)
@@ -1025,7 +1021,11 @@ def rebuild_pending_bills(client_id=None):
         client_name_norm = (client.name or '').strip().lower()
         sales = DirectSale.query.filter(func.lower(func.trim(DirectSale.client_name)) == client_name_norm).all()
         bookings = Booking.query.filter(func.lower(func.trim(Booking.client_name)) == client_name_norm).all()
-        payments = Payment.query.filter(func.lower(func.trim(Payment.client_name)) == client_name_norm, Payment.is_void == False).order_by(Payment.date_posted.asc(), Payment.id.asc()).all()
+        payments = Payment.query.filter(
+            or_(Payment.client_id == client.id,
+                and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
+            Payment.is_void == False,
+        ).order_by(Payment.date_posted.asc(), Payment.id.asc()).all()
     else:
         sales = DirectSale.query.all()
         bookings = Booking.query.all()
@@ -1039,7 +1039,7 @@ def rebuild_pending_bills(client_id=None):
 
     replayed = 0
     for p in payments:
-        client = get_client_by_input(p.client_name or '')
+        client = db.session.get(Client, p.client_id) if getattr(p, 'client_id', None) else get_client_by_input(p.client_name or '')
         if not client:
             continue
         replayed += _apply_settlement_to_pending_bills_for_client(
