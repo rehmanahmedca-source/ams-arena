@@ -19,6 +19,7 @@ instance/health_snapshot.json
 instance/root_hourly_backups/
 instance/_backup_pre_realdatamigration/
 instance/_migration_check/
+instance/recover_backups/
 
 # Workspace artifacts
 workspace-*.zip

@@ -164,11 +164,47 @@ def _guard_db_file_before_bootstrap():
                 f"DB health check failed: '{db_path}' is too small to be a valid data file. "
                 "Set ALLOW_EMPTY_DB=1 to initialize a new database explicitly."
             )
+        _guard_db_integrity(db_path)
         return
     if not _ALLOW_EMPTY_DB:
         raise RuntimeError(
             f"DB health check failed: DB file not found at '{db_path}'. "
             "Set APP_DB_PATH to your real database or ALLOW_EMPTY_DB=1 to create a new one."
+        )
+
+
+def _guard_db_integrity(path: str) -> None:
+    """Fail fast with an actionable message when the SQLite file is corrupt.
+
+    A malformed database otherwise surfaces later as an opaque
+    ``sqlite3.DatabaseError: database disk image is malformed`` from deep
+    inside SQLAlchemy during ``db.create_all()`` / the first request, which is
+    hard to attribute to the DB file. ``PRAGMA quick_check`` verifies page
+    integrity without re-validating every index entry, so it stays fast enough
+    for a startup guard on typical single-shop databases.
+    """
+    recovery_hint = (
+        "Recover it with `sqlite3 <db> '.recover' | sqlite3 recovered.db` "
+        "(after backing up the original plus its -wal/-shm files), or start "
+        "fresh with ALLOW_EMPTY_DB=1 and ALLOW_DB_DROP=1."
+    )
+    try:
+        con = sqlite3.connect(path)
+        try:
+            rows = con.execute("PRAGMA quick_check").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"DB health check failed: '{path}' cannot be read — {exc}. "
+            "The SQLite file is corrupt or is not a valid database. "
+            f"{recovery_hint}"
+        ) from exc
+    if len(rows) != 1 or rows[0][0] != "ok":
+        details = " | ".join(" ".join(str(c) for c in r) for r in rows[:5]) or "unknown error"
+        raise RuntimeError(
+            f"DB health check failed: '{path}' failed SQLite quick_check: "
+            f"{details}. {recovery_hint}"
         )
 
 
