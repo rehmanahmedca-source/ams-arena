@@ -306,6 +306,140 @@ def _client_snapshot():
     }
 
 
+def _client_snapshot_for(client):
+    """Request-scoped snapshot for a single client identity.
+
+    Produces the same shape as :func:`_client_snapshot` but only loads the
+    source rows that can possibly belong to this client (matched by id, code
+    or name), so a per-client financial summary no longer scans every client's
+    bookings/sales/payments/pending/waive/cancel rows.
+
+    Attribution parity is guaranteed by re-running the exact same resolver
+    helpers used by the full snapshot; the SQL predicates are only a cheap
+    superset filter (token-ordered ``LIKE`` for names) and false positives are
+    discarded by the resolver.
+    """
+    clients, by_id, by_code, by_name = _client_maps()
+    groups = {
+        "bookings": defaultdict(list),
+        "sales": defaultdict(list),
+        "payments": defaultdict(list),
+        "pending": defaultdict(list),
+        "waives": defaultdict(list),
+        "cancels": defaultdict(list),
+    }
+    unresolved = defaultdict(lambda: {"name": "", "code": "", "rows": []})
+
+    norm_name = _norm(getattr(client, "name", None))
+    norm_code = _norm(getattr(client, "code", None))
+    same_name_ids = [
+        c.id for c in clients
+        if _norm(getattr(c, "name", None)) == norm_name
+    ] or [client.id]
+    same_name_id_set = set(same_name_ids)
+
+    def name_clause(attr):
+        tokens = norm_name.split() if norm_name else []
+        if not tokens:
+            return None
+        pattern = "%" + "%".join(tokens) + "%"
+        return func.lower(func.trim(attr)).like(pattern)
+
+    def add_by_resolver(kind, obj, resolved_client):
+        if resolved_client is not None and resolved_client.id in same_name_id_set:
+            groups[kind][client.id].append(obj)
+        else:
+            key_name = _norm(getattr(obj, "client_name", None) or getattr(obj, "client", None))
+            key = f"unresolved:{key_name or 'unknown'}"
+            unresolved[key]["name"] = getattr(obj, "client_name", None) or getattr(obj, "client", None) or "Unlinked client"
+            unresolved[key]["code"] = getattr(obj, "client_code", None) or ""
+            unresolved[key]["rows"].append((kind, obj))
+
+    # Bookings carry only a name.
+    bq = Booking.query.filter(Booking.is_void == False)
+    b_name = name_clause(Booking.client_name)
+    if b_name is not None:
+        bq = bq.filter(b_name)
+    for obj in bq.all():
+        add_by_resolver("bookings", obj, _resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
+
+    # Sales carry a code and a name.
+    sq = DirectSale.query.filter(DirectSale.is_void == False)
+    s_clauses = []
+    s_name = name_clause(DirectSale.client_name)
+    if s_name is not None:
+        s_clauses.append(s_name)
+    if norm_code:
+        s_clauses.append(func.lower(func.trim(DirectSale.client_code)) == norm_code)
+    if s_clauses:
+        sq = sq.filter(or_(*s_clauses))
+    for obj in sq.all():
+        add_by_resolver("sales", obj, _resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
+
+    # Payments carry a client_id and a name.
+    pq = Payment.query.filter(Payment.is_void == False)
+    p_clauses = [Payment.client_id.in_(same_name_ids)]
+    p_name = name_clause(Payment.client_name)
+    if p_name is not None:
+        p_clauses.append(p_name)
+    pq = pq.filter(or_(*p_clauses))
+    for obj in pq.all():
+        add_by_resolver("payments", obj, _resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
+
+    # Pending bills carry a code and a name.
+    pbq = PendingBill.query.filter(PendingBill.is_void == False)
+    pb_clauses = []
+    pb_name = name_clause(PendingBill.client_name)
+    if pb_name is not None:
+        pb_clauses.append(pb_name)
+    if norm_code:
+        pb_clauses.append(func.lower(func.trim(PendingBill.client_code)) == norm_code)
+    if pb_clauses:
+        pbq = pbq.filter(or_(*pb_clauses))
+    for obj in pbq.all():
+        add_by_resolver("pending", obj, _resolve_pending_client(obj, by_code=by_code, by_name=by_name))
+
+    # Waive-off rows: skip the DirectSale.discount audit mirrors.
+    wq = WaiveOff.query.filter(WaiveOff.is_void == False)
+    wq = wq.filter(~func.lower(func.coalesce(WaiveOff.note, '')).like('[direct_sale_discount:%'))
+    w_clauses = []
+    w_name = name_clause(WaiveOff.client_name)
+    if w_name is not None:
+        w_clauses.append(w_name)
+    if norm_code:
+        w_clauses.append(func.lower(func.trim(WaiveOff.client_code)) == norm_code)
+    if w_clauses:
+        wq = wq.filter(or_(*w_clauses))
+    for obj in wq.all():
+        resolved = by_name.get(_norm(getattr(obj, "client_name", None)))
+        if not resolved and getattr(obj, "client_code", None):
+            resolved = by_code.get(_norm(obj.client_code))
+        add_by_resolver("waives", obj, resolved)
+
+    # Booking cancellations are Entry rows of type CANCEL.
+    cq = Entry.query.filter(Entry.type == "CANCEL", Entry.is_void == False)
+    c_clauses = []
+    c_name = name_clause(Entry.client)
+    if c_name is not None:
+        c_clauses.append(c_name)
+    if norm_code:
+        c_clauses.append(func.lower(func.trim(Entry.client_code)) == norm_code)
+    if c_clauses:
+        cq = cq.filter(or_(*c_clauses))
+    for obj in cq.all():
+        resolved = by_code.get(_norm(getattr(obj, "client_code", None))) or by_name.get(_norm(getattr(obj, "client", None)))
+        add_by_resolver("cancels", obj, resolved)
+
+    return {
+        "clients": clients,
+        "by_id": by_id,
+        "by_code": by_code,
+        "by_name": by_name,
+        "groups": groups,
+        "unresolved": unresolved,
+    }
+
+
 def _record_refs(obj, kind) -> set[str]:
     refs = set()
     if kind == "booking":

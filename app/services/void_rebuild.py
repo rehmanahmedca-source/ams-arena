@@ -1328,10 +1328,37 @@ def repair_transaction_by_bill_no(bill_no):
 
 
 def _rebuild_material_totals():
-    """Recalculate material stock totals from active entry rows."""
+    """Recalculate material stock totals from active entry rows.
+
+    Single-pass aggregation: the previous implementation issued two SUM
+    queries per material (N materials = 2N queries).  Every sale submit,
+    void, edit and delete calls this, so on a large catalogue the rebuild
+    alone could add hundreds of queries to one transaction.  The grouped
+    form below is two queries total and is behaviour-identical.
+    """
+    in_rows = db.session.query(
+        Entry.material, func.sum(Entry.qty)
+    ).filter(
+        Entry.type == 'IN',
+        Entry.is_void == False,
+    ).group_by(Entry.material).all()
+    out_rows = db.session.query(
+        Entry.material, func.sum(Entry.qty)
+    ).filter(
+        Entry.type == 'OUT',
+        Entry.is_void == False,
+    ).group_by(Entry.material).all()
+
+    totals = {}
+    for material, qty in in_rows:
+        if material:
+            totals[str(material)] = float(qty or 0)
+    for material, qty in out_rows:
+        if material:
+            key = str(material)
+            totals[key] = float(totals.get(key, 0) or 0) - float(qty or 0)
+
     for mat in Material.query.all():
-        total_in = float(db.session.query(func.sum(Entry.qty)).filter_by(material=mat.name, type='IN', is_void=False).scalar() or 0)
-        total_out = float(db.session.query(func.sum(Entry.qty)).filter_by(material=mat.name, type='OUT', is_void=False).scalar() or 0)
-        mat.total = total_in - total_out
+        mat.total = totals.get(mat.name, 0)
 
 

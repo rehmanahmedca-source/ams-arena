@@ -149,6 +149,7 @@ class BillCounter(db.Model):
 
 class DirectSale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    idempotency_key = db.Column(db.String(64), nullable=True, index=True)
     client_name = db.Column(db.String(100))
     client_code = db.Column(db.String(50), index=True)
     category = db.Column(db.String(50))

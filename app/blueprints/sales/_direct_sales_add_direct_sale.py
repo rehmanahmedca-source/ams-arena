@@ -87,6 +87,24 @@ def add_direct_sale():
         delivery_rent = delivery_alloc_total
     draft_id = _safe_int(request.form.get('draft_id'))
 
+    # Idempotency guard: the form mints a fresh key each time the sale sheet is
+    # opened. A double-click / network retry re-submits the same key, so treat
+    # it as an already-saved sale instead of creating a second transaction.
+    idem_key = (request.form.get('idempotency_key') or '').strip() or None
+    if idem_key:
+        prior_sale = DirectSale.query.filter_by(idempotency_key=idem_key).order_by(DirectSale.id.desc()).first()
+        if prior_sale:
+            prior_bill = _direct_sale_default_bill_ref(prior_sale)
+            flash('This sale was already saved (duplicate submission ignored).', 'info')
+            return redirect(url_for(
+                'direct_sales_page',
+                download_bill=prior_bill,
+                download_src='direct_sale',
+                download_src_id=prior_sale.id,
+                download_client_code=prior_sale.client_code,
+                download_client_name=prior_sale.client_name,
+            ))
+
     # Check for global setting
     settings = Settings.query.first()
     global_negative_stock_allowed = settings.allow_global_negative_stock if settings else False
@@ -499,7 +517,8 @@ def add_direct_sale():
 
     auto_bill_no = get_next_bill_no(AUTO_BILL_NAMESPACES['DIRECT_SALE'])
 
-    sale = DirectSale(client_name=client_name,
+    sale = DirectSale(idempotency_key=idem_key,
+                      client_name=client_name,
                       client_code=sale_client_code,
                       amount=amount,
                       paid_amount=paid_amount,
@@ -606,14 +625,10 @@ def add_direct_sale():
     _apply_booking_allocations_for_sale(sale, sale_item_records)
     _apply_grn_allocations_for_sale(sale, sale_item_records)
 
-    _sync_direct_sale_pending_bill(sale, materials_list[0] if materials_list else '')
-    _sync_delivery_rent_for_sale(
-        sale,
-        rent_amount=delivery_rent,
-        rent_note=''
-    )
-    _sync_direct_sale_waive_off(sale)
-    _sync_direct_sale_accounting(sale)
+    # finalize_transaction() → rebuild_direct_sale_effects() already synchronises
+    # pending bill, delivery rent, waive-off and accounts for this sale, then
+    # recalculates stock — all inside the same DB transaction.  Calling those
+    # four syncs here too was redundant duplicate work per submit.
     finalize_transaction('sales', sale.id)
 
     db.session.commit()

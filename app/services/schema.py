@@ -457,6 +457,24 @@ def _ensure_account_type_compat():
         db.session.rollback()
 
 
+def _ensure_direct_sale_idempotency_index():
+    """DB-level duplicate-submission guard for direct sales.
+
+    SQLite's ALTER TABLE cannot add a UNIQUE constraint, so a partial unique
+    index is created instead (NULL keys for legacy rows are exempt). The
+    application-level check in ``add_direct_sale`` is the primary guard; this
+    index makes duplicate commits impossible even under a double-click race.
+    """
+    try:
+        db.session.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_direct_sale_idempotency_key "
+            "ON direct_sale(idempotency_key) WHERE idempotency_key IS NOT NULL"
+        ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
 def _ensure_default_admin():
     """Create a first admin if the user table is empty (fresh / empty DB)."""
     if User.query.count() > 0:
@@ -536,6 +554,10 @@ def _bootstrap_database():
         pass
     try:
         _ensure_user_permission_defaults()
+    except Exception:
+        pass
+    try:
+        _ensure_direct_sale_idempotency_index()
     except Exception:
         pass
     try:
