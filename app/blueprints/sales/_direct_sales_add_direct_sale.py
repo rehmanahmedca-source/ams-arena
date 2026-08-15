@@ -147,6 +147,23 @@ def add_direct_sale():
                 continue
             delivered_totals[key] = delivered_totals.get(key, 0) + float(entry.qty or 0)
 
+        # Include returned booked material quantities so that after a Booked Return,
+        # the available booked material is correctly restored: available = booked - delivered + returned
+        returned_booked_totals = {}
+        return_entries = Entry.query.filter(
+            or_(Entry.client_code == client.code,
+                func.lower(func.trim(Entry.client)) == func.lower(func.trim(client.name))),
+            Entry.type == 'IN',
+            Entry.is_void == False,
+            Entry.nimbus_no == 'Material Return',
+            Entry.transaction_category == 'Booked Return'
+        ).all()
+        for entry in return_entries:
+            key = _material_norm_key(entry.material)
+            if not key:
+                continue
+            returned_booked_totals[key] = returned_booked_totals.get(key, 0) + float(entry.qty or 0)
+
         for mat_in in set(materials_list):
             mat_obj = get_material_by_input(mat_in)
             mat_name_in = str(mat_in or '').strip()
@@ -157,7 +174,7 @@ def add_direct_sale():
             if not mat_obj:
                 continue
             key = _material_norm_key(mat_obj.name)
-            booking_balances[key] = max(0, booked_totals.get(key, 0) - delivered_totals.get(key, 0))
+            booking_balances[key] = max(0, booked_totals.get(key, 0) - delivered_totals.get(key, 0) + returned_booked_totals.get(key, 0))
 
     # 2. Process Items (Auto-Split Booking vs Sale)
     processed_items = []
@@ -292,6 +309,7 @@ def add_direct_sale():
         return _fail_sale('Total delivery bags cannot exceed total material quantity for this sale.')
 
     # Compute whether this client has any active booking balance (across all materials).
+    # Available booked material = booked - delivered + returned.
     has_client_booking_balance = False
     if client:
         norm_name = (client.name or '').strip().lower()
@@ -325,8 +343,27 @@ def add_direct_sale():
                 key = _material_norm_key(mat)
                 if key:
                     delivered_map_all[key] = delivered_map_all.get(key, 0) + float(qty or 0)
+            # Also include returned booked material quantities
+            returned_booked_rows = db.session.query(
+                func.trim(Entry.material),
+                func.sum(Entry.qty)
+            ).filter(
+                Entry.type == 'IN',
+                Entry.is_void == False,
+                Entry.nimbus_no == 'Material Return',
+                Entry.transaction_category == 'Booked Return',
+                or_(
+                    Entry.client_code == client.code,
+                    func.lower(func.trim(Entry.client)) == norm_name
+                )
+            ).group_by(func.trim(Entry.material)).all()
+            returned_booked_map = {}
+            for mat, qty in returned_booked_rows:
+                key = _material_norm_key(mat)
+                if key:
+                    returned_booked_map[key] = returned_booked_map.get(key, 0) + float(qty or 0)
             has_client_booking_balance = any(
-                booked_qty - delivered_map_all.get(mat_key, 0) > 0
+                booked_qty - delivered_map_all.get(mat_key, 0) + returned_booked_map.get(mat_key, 0) > 0
                 for mat_key, booked_qty in booked_map_all.items()
             )
 

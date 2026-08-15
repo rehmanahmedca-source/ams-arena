@@ -551,23 +551,85 @@ def _allocate_booking_quantities_for_sale_item(client_name, booked_material, qty
         return []
 
     allocated = _booking_allocated_qty_map([item.id for item in booking_items])
+
+    # Compute total returned booked material for this client + material.
+    # Booked Returns restore the available booking pool without voiding allocations.
+    norm_name = func.lower(func.trim(client_name)) if client_name else ''
+    client_obj = Client.query.filter(
+        func.lower(func.trim(Client.name)) == norm_name
+    ).first() if client_name else None
+    returned_qty = 0.0
+    if client_obj:
+        returned_row = db.session.query(
+            func.sum(Entry.qty)
+        ).filter(
+            Entry.type == 'IN',
+            Entry.is_void == False,
+            Entry.nimbus_no == 'Material Return',
+            Entry.transaction_category == 'Booked Return',
+            or_(
+                Entry.client_code == client_obj.code,
+                func.lower(func.trim(Entry.client)) == norm_name
+            ),
+        ).filter(
+            func.lower(func.trim(Entry.material)) == func.lower(func.trim(booked_material))
+        ).all()
+        if returned_row and returned_row[0][0]:
+            returned_qty = float(returned_row[0][0] or 0)
+
+    # Total pool = sum(item.qty) - sum(allocated) + returned.
+    total_booked = sum(float(item.qty or 0) for item in booking_items)
+    total_allocated = sum(allocated.get(item.id, 0.0) for item in booking_items)
+    pool_available = max(0.0, total_booked - total_allocated + returned_qty)
+
+    if pool_available < qty_needed:
+        raise ValueError(
+            f'Not enough booked quantity for {booked_material}. '
+            f'Requested {qty_needed}, available {pool_available:.2f}.'
+        )
+
     remaining = float(qty_needed or 0)
     allocation_plan = []
 
+    # First pass: allocate from items that still have original qty - alloc > 0
     for item in booking_items:
-        available = max(0.0, float(item.qty or 0) - allocated.get(item.id, 0.0))
-        if available <= 0:
+        avail = max(0.0, float(item.qty or 0) - allocated.get(item.id, 0.0))
+        if avail <= 0:
             continue
-        consume_qty = min(available, remaining)
-        if consume_qty <= 0:
+        take = min(avail, remaining)
+        if take <= 0:
             continue
-        allocation_plan.append((item, consume_qty))
-        remaining -= consume_qty
+        allocation_plan.append((item, take))
+        remaining -= take
         if remaining <= 0:
             break
 
+    # Second pass: if returns have replenished the pool, allocate from items
+    # that were fully consumed but now have returned stock available.
+    # We replenish items in LIFO order (most recent first) so older lots are
+    # consumed first on subsequent allocations (preserving FIFO for the future).
+    if remaining > 0 and returned_qty > 0:
+        for item in reversed(booking_items):
+            max_capacity = float(item.qty or 0)
+            already_used = allocated.get(item.id, 0.0)
+            # How much MORE can we allocate to this item beyond its original qty?
+            # The returned pool lets us re-use the item's capacity.
+            if already_used <= 0:
+                continue
+            take = min(remaining, max_capacity)
+            if take <= 0:
+                continue
+            allocation_plan.append((item, take))
+            remaining -= take
+            if remaining <= 0:
+                break
+
     if remaining > 0:
-        raise ValueError(f'Not enough booked quantity for {booked_material}. Requested {qty_needed}, available {qty_needed - remaining}.')
+        raise ValueError(
+            f'Not enough booked quantity for {booked_material}. '
+            f'Requested {qty_needed}, available {qty_needed - remaining:.2f} (after returns).'
+        )
+
     return allocation_plan
 
 
