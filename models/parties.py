@@ -70,6 +70,10 @@ class DeliveryPerson(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False)
     phone = db.Column(db.String(30))
+    # Opening balance is additive and optional.  Positive means the business
+    # owes the delivery person; negative means an advance/prepayment.
+    opening_balance = db.Column(db.Float, default=0)
+    opening_balance_date = db.Column(db.DateTime, default=pk_model_now, index=True)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
 

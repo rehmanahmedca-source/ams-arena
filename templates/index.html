@@ -55,7 +55,7 @@
         cta='See credit breakdown'
     ) }}
     {{ ui_tile(
-        href='/unpaid_transactions?status=unpaid',
+        href='/current_payables',
         label='Total Outstanding',
         value='Rs. ' ~ "{:,.0f}".format(total_outstanding),
         icon='bi-exclamation-circle',

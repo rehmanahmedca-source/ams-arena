@@ -404,9 +404,31 @@ def _invoice_cutoff_dt(invoice_obj):
 
 
 def _client_balance_as_of(client_obj, cutoff_dt=None):
-    """Return client pending balance using transactions up to cutoff_dt (inclusive)."""
+    """Return the unified client-ledger balance up to ``cutoff_dt``.
+
+    The local import keeps the historical service dependency graph acyclic.
+    Bill views, receipts, payables and the client ledger therefore use the same
+    read-side projection rather than four independent formulas.
+    """
     if not client_obj:
         return 0.0
+    try:
+        from app.services.financial_ledgers import build_client_financial_ledger
+        ledger = build_client_financial_ledger(client_obj)
+        if not cutoff_dt:
+            return float(ledger.get('closing_balance') or 0)
+        from decimal import Decimal
+        balance = Decimal('0.00')
+        for row in ledger.get('rows', []):
+            row_dt = row.get('date')
+            if row_dt is None or row_dt == datetime.min or row_dt <= cutoff_dt:
+                balance += Decimal(str(row.get('debit') or 0)) - Decimal(str(row.get('credit') or 0))
+        return float(balance)
+    except Exception:
+        # Preserve the legacy fallback for a partially upgraded database while
+        # schema bootstrap is in progress.  It is intentionally below the
+        # authoritative path and does not mutate any rows.
+        pass
 
     opening_effect = 0.0
     opening_balance = _to_float_or_zero(getattr(client_obj, 'opening_balance', 0))
