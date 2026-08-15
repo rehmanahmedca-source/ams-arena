@@ -10,71 +10,101 @@ def pay_supplier_page():
 @bp.route('/supplier_ledger/<int:id>')
 @login_required
 def supplier_ledger(id):
+    """Supplier ledger using the same projection/filter contract as clients."""
     supplier = Supplier.query.get_or_404(id)
-    ledger, balance, total_bill, total_paid = _build_supplier_ledger_rows(supplier)
-    page = request.args.get('page', 1, type=int) or 1
-    per_page = 10
-    total_entries = len(ledger)
-    total_pages = max(1, (total_entries + per_page - 1) // per_page)
-    if page < 1:
-        page = 1
-    if page > total_pages:
-        page = total_pages
-    start = (page - 1) * per_page
-    end = start + per_page
-    page_rows = ledger[start:end]
-    accounts = Account.query.filter(
-        func.coalesce(Account.is_active, True) == True
-    ).order_by(Account.category.asc(), Account.name.asc()).all()
+    requested_supplier = (request.args.get('supplier_search') or '').strip()
+    if requested_supplier:
+        alternate = get_supplier_by_input(requested_supplier)
+        if alternate and alternate.id != supplier.id:
+            preserved = request.args.to_dict()
+            preserved.pop('supplier_search', None)
+            return redirect(url_for('supplier_ledger', id=alternate.id, **preserved))
+    filters = {
+        'start_date': (request.args.get('start_date') or request.args.get('date_from') or '').strip(),
+        'end_date': (request.args.get('end_date') or request.args.get('date_to') or '').strip(),
+        'type_filter': (request.args.get('type') or request.args.get('transaction_type') or '').strip(),
+        'query': (request.args.get('q') or request.args.get('search') or '').strip(),
+        'amount_min': (request.args.get('amount_min') or '').strip(),
+        'amount_max': (request.args.get('amount_max') or '').strip(),
+        'account_filter': (request.args.get('account') or '').strip(),
+        'status_filter': (request.args.get('status') or '').strip(),
+    }
+    from app.services.financial_ledgers import build_supplier_financial_ledger
+    ledger = build_supplier_financial_ledger(supplier, **filters)
+    selected = ledger['filtered_rows']
+    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    per_page = min(max(request.args.get('per_page', 25, type=int) or 25, 10), 100)
+    total = len(selected)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    page_rows = selected[(page - 1) * per_page: page * per_page]
+    closing = page_rows[-1]['balance'] if page_rows else ledger['closing_balance']
+    suppliers = Supplier.query.filter(Supplier.is_active == True).order_by(Supplier.name.asc(), Supplier.id.asc()).all()
     return render_template(
-        'supplier_ledger.html',
-        supplier=supplier,
-        ledger=page_rows,
-        accounts=accounts,
-        payments_readonly=True,
-        ledger_total=total_entries,
-        final_balance=balance,
-        total_bill=total_bill,
-        total_paid=total_paid,
+        'financial_ledger.html',
+        entity=supplier,
+        entity_type='supplier',
+        ledger=ledger,
+        rows=page_rows,
+        all_rows=ledger['rows'],
+        obligations=[],
+        filters=filters,
         page=page,
-        total_pages=total_pages,
         per_page=per_page,
+        total=total,
+        total_pages=total_pages,
+        filtered_closing=closing,
+        selector_entities=suppliers,
+        current_payable=max(0.0, float(ledger['closing_balance'] or 0)),
+        back_url=url_for('suppliers'),
+        opening_url=url_for('supplier_opening_balance', id=supplier.id),
         today_date=pk_today().strftime('%Y-%m-%d'),
-        current_pk_datetime=pk_now().strftime('%Y-%m-%dT%H:%M')
     )
 
 
 @bp.route('/download_supplier_ledger/<int:id>')
 @login_required
 def download_supplier_ledger(id):
+    """Export all filtered supplier movements (not only the visible page)."""
     supplier = Supplier.query.get_or_404(id)
-    ledger, final_balance, total_bill, total_paid = _build_supplier_ledger_rows(supplier)
+    filters = {
+        'start_date': (request.args.get('start_date') or '').strip(),
+        'end_date': (request.args.get('end_date') or '').strip(),
+        'type_filter': (request.args.get('type') or '').strip(),
+        'query': (request.args.get('q') or '').strip(),
+        'amount_min': (request.args.get('amount_min') or '').strip(),
+        'amount_max': (request.args.get('amount_max') or '').strip(),
+        'account_filter': (request.args.get('account') or '').strip(),
+        'status_filter': (request.args.get('status') or '').strip(),
+    }
+    from app.services.financial_ledgers import build_supplier_financial_ledger
+    ledger = build_supplier_financial_ledger(supplier, **filters)
     action = (request.args.get('action') or 'download').lower()
-    disposition = 'inline' if action == 'print' else 'attachment'
+    if action != 'print':
+        import csv
+        from io import StringIO
+        out = StringIO(newline='')
+        writer = csv.writer(out)
+        writer.writerow(['Date', 'Type', 'Reference', 'Description', 'Debit', 'Credit', 'Balance', 'Account', 'Notes'])
+        for row in ledger['filtered_rows']:
+            writer.writerow([
+                row['date'].strftime('%Y-%m-%d %H:%M') if row.get('date') and row['date'] != datetime.min else '',
+                row.get('type', ''), row.get('reference', ''), row.get('description', ''),
+                f"{row.get('debit', 0):.2f}", f"{row.get('credit', 0):.2f}",
+                f"{row.get('balance', 0):.2f}", row.get('account', ''), row.get('note', ''),
+            ])
+        response = Response(out.getvalue(), mimetype='text/csv; charset=utf-8')
+        response.headers['Content-Disposition'] = 'attachment; filename=supplier-ledger.csv'
+        return response
     rendered = render_template(
         'supplier_ledger_print.html',
-        supplier=supplier,
-        ledger=ledger,
-        final_balance=final_balance,
-        total_bill=total_bill,
-        total_paid=total_paid,
-        generated_at=pk_now(),
-        auto_print=(action == 'print')
+        supplier=supplier, ledger=ledger['filtered_rows'],
+        final_balance=ledger['closing_balance'], total_bill=ledger['total_credit'],
+        total_paid=ledger['total_debit'], generated_at=pk_now(), auto_print=True
     )
-    # Prefer WeasyPrint for download output when available.
-    if action != 'print':
-        pdf_response = _try_render_weasy_pdf(
-            rendered,
-            _download_filename('SUPPLIERLEDGER', 'pdf'),
-            disposition=disposition
-        )
-        if pdf_response:
-            return pdf_response
-
     response = make_response(rendered)
-    response.headers['Content-Disposition'] = f'{disposition}; filename={_download_filename("SUPPLIERLEDGER", "html")}'
+    response.headers['Content-Disposition'] = 'inline; filename=supplier-ledger.html'
     response.headers['Content-Type'] = 'text/html; charset=utf-8'
-    _disable_response_cache(response)
     return response
 
 

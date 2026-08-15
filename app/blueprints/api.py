@@ -128,7 +128,15 @@ def api_client_financial_summary(client_code):
         resp.headers['Pragma'] = 'no-cache'
         resp.headers['Expires'] = '0'
         return resp
-    summary = _compute_client_financial_summary(client)
+    unified_ledger = build_client_financial_ledger(client)
+    summary = {
+        'balance': float(unified_ledger.get('closing_balance') or 0),
+        'debit_total': float(unified_ledger.get('total_debit') or 0),
+        'credit_total': float(unified_ledger.get('total_credit') or 0),
+        'cash_received_total': float(unified_ledger.get('total_credit') or 0),
+        'waive_off_total': sum(float(row.get('credit') or 0) for row in unified_ledger.get('rows', []) if row.get('type') == 'Waive-Off'),
+        'status': (unified_ledger.get('status') or '').lower(),
+    }
     resp = jsonify({
         'found': True,
         'client_name': client.name,
@@ -245,11 +253,24 @@ def api_notifications_due():
 @login_required
 def api_clients_search():
     q = request.args.get('q', '').strip()
-    if len(q) < 2:
-        return jsonify([])
-    clients = Client.query.filter(
-        db.or_(Client.name.ilike(f'%{q}%'), Client.code.ilike(f'%{q}%'))).limit(10).all()
-    return jsonify([{'name': c.name, 'code': c.code, 'category': c.category} for c in clients])
+    query = Client.query.filter(Client.is_active == True)
+    if q:
+        query = query.filter(
+            db.or_(Client.name.ilike(f'%{q}%'), Client.code.ilike(f'%{q}%'))
+        )
+    clients = query.order_by(Client.name.asc(), Client.id.asc()).limit(25).all()
+    return jsonify([{'id': c.id, 'name': c.name, 'code': c.code, 'category': c.category} for c in clients])
+
+
+@bp.route('/api/suppliers/search')
+@login_required
+def api_suppliers_search():
+    q = request.args.get('q', '').strip()
+    query = Supplier.query.filter(Supplier.is_active == True)
+    if q:
+        query = query.filter(Supplier.name.ilike(f'%{q}%'))
+    suppliers = query.order_by(Supplier.name.asc(), Supplier.id.asc()).limit(25).all()
+    return jsonify([{'id': s.id, 'name': s.name, 'phone': s.phone or ''} for s in suppliers])
 
 
 @bp.route('/api/check_bill/<path:bill_no>')
@@ -273,13 +294,20 @@ def api_supplier_balance(id):
     if not supplier:
         return jsonify({'balance': 0})
 
-    ledger_rows, balance, total_bill, total_paid = _build_supplier_ledger_rows(supplier)
+    ledger = build_supplier_financial_ledger(supplier)
     return jsonify({
-        'balance': float(balance or 0),
+        'balance': float(ledger['closing_balance'] or 0),
         'opening_balance': float(_to_float_or_zero(getattr(supplier, 'opening_balance', 0))),
-        'total_bill': float(total_bill or 0),
-        'total_paid': float(total_paid or 0),
-        'rows': len(ledger_rows or [])
+        'total_bill': float(ledger['total_credit'] or 0),
+        'total_paid': float(ledger['total_debit'] or 0),
+        'rows': len(ledger['rows'] or [])
     })
+
+
+@bp.route('/api/audit/financial-integrity')
+@login_required
+def api_financial_integrity_audit():
+    """Read-only ghost/duplicate/orphan audit; no questionable data is deleted."""
+    return jsonify(financial_integrity_audit())
 
 

@@ -5,7 +5,7 @@ from ._common import *  # noqa
 def client_opening_balance(id):
     if not _user_can('can_manage_clients'):
         flash('Permission denied', 'danger')
-        return redirect(url_for('client_ledger', id=id))
+        return redirect(url_for('financial_ledger', client_id=id))
     c = db.session.get(Client, id)
     if not c:
         flash('Client not found', 'danger')
@@ -17,5 +17,5 @@ def client_opening_balance(id):
     )
     db.session.commit()
     flash('Opening balance updated', 'success')
-    return redirect(url_for('client_ledger', id=id))
+    return redirect(url_for('financial_ledger', client_id=id))
 

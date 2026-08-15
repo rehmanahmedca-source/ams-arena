@@ -1,5 +1,6 @@
 """helpers — split from accounts.py."""
 from ._common import *  # noqa
+from app.services.financial_ledgers import build_current_payables, build_supplier_financial_ledger
 
 
 def _grn_has_active_auto_payment(grn):
@@ -168,137 +169,28 @@ def _money_round(value):
 
 
 def _client_due_summary():
-    summary = []
-    clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
-    for client in clients:
-        client_name_norm = (client.name or '').strip().lower()
-        if not client_name_norm:
-            continue
-
-        booking_debit = db.session.query(func.sum(Booking.amount)).filter(
-            func.lower(func.trim(Booking.client_name)) == client_name_norm,
-            Booking.is_void == False
-        ).scalar() or 0
-        booking_credit = db.session.query(func.sum(Booking.paid_amount)).filter(
-            func.lower(func.trim(Booking.client_name)) == client_name_norm,
-            Booking.is_void == False
-        ).scalar() or 0
-        payment_credit = db.session.query(func.sum(Payment.amount)).filter(
-            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
-            Payment.is_void == False,
-            Payment.amount >= 0
-        ).scalar() or 0
-        payment_debit = db.session.query(func.sum(-Payment.amount)).filter(
-            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
-            Payment.is_void == False,
-            Payment.amount < 0
-        ).scalar() or 0
-        sale_debit = db.session.query(func.sum(DirectSale.amount)).filter(
-            func.lower(func.trim(DirectSale.client_name)) == client_name_norm,
-            DirectSale.is_void == False
-        ).scalar() or 0
-        sale_credit = db.session.query(func.sum(DirectSale.paid_amount)).filter(
-            func.lower(func.trim(DirectSale.client_name)) == client_name_norm,
-            DirectSale.is_void == False
-        ).scalar() or 0
-
-        booking_discount = db.session.query(func.sum(Booking.discount)).filter(
-            func.lower(func.trim(Booking.client_name)) == client_name_norm,
-            Booking.is_void == False
-        ).scalar() or 0
-        sale_discount = db.session.query(func.sum(DirectSale.discount)).filter(
-            func.lower(func.trim(DirectSale.client_name)) == client_name_norm,
-            DirectSale.is_void == False
-        ).scalar() or 0
-        payment_discount = db.session.query(func.sum(Payment.discount)).filter(
-            or_(Payment.client_id == client.id, and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
-            Payment.is_void == False
-        ).scalar() or 0
-
-        opening_balance = float(getattr(client, 'opening_balance', 0) or 0)
-        opening_debit = opening_balance if opening_balance > 0 else 0
-        opening_credit = abs(opening_balance) if opening_balance < 0 else 0
-
-        debit_total = opening_debit + float(booking_debit or 0) + float(sale_debit or 0) + float(payment_debit or 0)
-        credit_total = (
-            opening_credit
-            + float(booking_credit or 0)
-            + float(payment_credit or 0)
-            + float(sale_credit or 0)
-            + float(booking_discount or 0)
-            + float(sale_discount or 0)
-            + float(payment_discount or 0)
-        )
-        due_amount = debit_total - credit_total
-        if due_amount <= 0:
-            continue
-
-        summary.append({
-            'client_code': client.code,
-            'client_name': client.name,
-            'due_amount': due_amount
-        })
-
-    summary.sort(key=lambda x: (-x['due_amount'], x['client_name'].lower()))
-    return summary
+    """Dashboard due-client KPI sourced from the consolidated ledger projection."""
+    report = build_current_payables(status='outstanding', page=1, per_page=200)
+    return [{
+        'client_code': row.get('client_code', ''),
+        'client_name': row.get('client_name', ''),
+        'due_amount': float(row.get('outstanding') or 0),
+    } for row in report.get('all_rows', [])]
 
 
 def _supplier_payable_summary():
+    """Dashboard supplier KPI sourced from the same Supplier Ledger projection."""
     summary = []
-    suppliers = Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all()
-    for supplier in suppliers:
-        supplier_id = supplier.id
-
-        # Calculate total GRN amounts for this supplier.  The paid portion
-        # comes from SupplierPayment when the GRN has an auto-payment row;
-        # only legacy GRNs without that row use GRN.paid_amount directly.
-        supplier_grns = GRN.query.filter(
-            GRN.supplier_id == supplier_id,
-            GRN.is_void == False
-        ).all()
-        grn_costs = sum(
-            float((grn.loading_cost or 0) + (grn.freight_cost or 0) +
-                  (grn.other_expense or 0) + (grn.tax_amount or 0) -
-                  (grn.discount or 0) + (grn.adjustment_amount or 0))
-            for grn in supplier_grns
-        )
-        grn_paid = _legacy_unrepresented_grn_paid_total(supplier_grns)
-
-        # Calculate GRN items total
-        grn_items_total = db.session.query(func.sum(GRNItem.qty * GRNItem.price_at_time)).filter(
-            GRNItem.is_void == False,
-            GRNItem.grn_id.in_(
-                db.session.query(GRN.id).filter(
-                    GRN.supplier_id == supplier_id,
-                    GRN.is_void == False
-                )
-            )
-        ).scalar() or 0
-
-        total_grn_amount = grn_items_total + grn_costs
-
-        # Supplier payments
-        supplier_payments_total = db.session.query(func.sum(SupplierPayment.amount)).filter(
-            SupplierPayment.supplier_id == supplier_id,
-            SupplierPayment.is_void == False
-        ).scalar() or 0
-
-        # Opening balance (if supplier owes us, it's negative)
-        opening_balance = float(getattr(supplier, 'opening_balance', 0) or 0)
-
-        # Payable amount = what we owe to supplier
-        # Positive means we owe money to supplier
-        payable_amount = total_grn_amount - grn_paid - supplier_payments_total + opening_balance
-
-        if payable_amount <= 0:
+    for supplier in Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all():
+        ledger = build_supplier_financial_ledger(supplier)
+        amount = float(ledger.get('closing_balance') or 0)
+        if amount <= 0:
             continue
-
         summary.append({
             'supplier_id': supplier.id,
             'supplier_name': supplier.name,
-            'payable_amount': payable_amount
+            'payable_amount': amount,
         })
-
     summary.sort(key=lambda x: (-x['payable_amount'], x['supplier_name'].lower()))
     return summary
 

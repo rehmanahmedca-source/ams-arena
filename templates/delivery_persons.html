@@ -45,6 +45,7 @@
                         <span class="badge {{ 'bg-success' if row.is_active else 'bg-secondary' }}">{{ 'Active' if row.is_active else 'Inactive' }}</span>
                     </td>
                     <td class="text-end pe-4">
+                        <a href="{{ url_for('delivery_person_ledger', id=row.id) }}" class="btn btn-outline-success btn-sm me-1" title="Open financial ledger"><i class="bi bi-journal-text me-1"></i>Ledger</a>
                         <button type="button" class="btn btn-outline-info btn-sm me-1" data-bs-toggle="modal" data-bs-target="#editDeliveryPersonModal{{ row.id }}">Edit</button>
                         <form method="POST" action="{{ url_for('toggle_delivery_person', id=row.id) }}" class="d-inline">
                             <button class="btn btn-outline-warning btn-sm">{{ 'Deactivate' if row.is_active else 'Activate' }}</button>

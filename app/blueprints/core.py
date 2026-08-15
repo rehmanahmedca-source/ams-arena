@@ -56,13 +56,10 @@ def index():
     credit_sales = db.session.query(func.sum(DirectSale.amount - DirectSale.paid_amount)).filter(func.date(DirectSale.date_posted) == today_date, DirectSale.is_void == False).scalar() or 0
     daily_credit = credit_bookings + credit_sales
 
-    # Total Outstanding (Unpaid Bills) aligned with ledger net due
-    open_pending = PendingBill.query.filter(
-        PendingBill.is_paid == False,
-        PendingBill.is_void == False
-    ).all()
-    effective_map = _compute_pending_effective_amount_map(open_pending)
-    total_outstanding = sum(float(effective_map.get(pb.id, float(pb.amount or 0)) or 0) for pb in open_pending)
+    # Total Outstanding is the same grouped client-ledger projection used by
+    # Current Payables and Accounts.  It must not sum derived PendingBill rows.
+    payable_report = build_current_payables(status='outstanding', page=1, per_page=200)
+    total_outstanding = float(payable_report.get('total_outstanding') or 0)
 
     # Daily Sales Breakdown
     sales_breakdown = {}
