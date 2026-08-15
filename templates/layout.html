@@ -663,6 +663,7 @@ function toggleNavGroup(groupId, btn) {
     // Global Utilities
     let loadingShownAt = 0;
     let loadingWatchTimer = null;
+    let __formSubmitting = false;
     function showLoading() {
         if (!loadingOverlay) return;
         loadingOverlay.classList.add('show');
@@ -673,15 +674,31 @@ function toggleNavGroup(groupId, btn) {
             setTimeout(() => { if (loadingOverlay.classList.contains('show')) dismiss.style.display = 'inline-block'; }, 8000);
         }
         if (loadingWatchTimer) clearTimeout(loadingWatchTimer);
-        loadingWatchTimer = setTimeout(hideLoading, 120000);
+        // Reduced from 120s to 30s — users should not wait 2 minutes for a stuck overlay
+        loadingWatchTimer = setTimeout(hideLoading, 30000);
     }
     function hideLoading() {
         if (loadingOverlay) loadingOverlay.classList.remove('show');
         loadingShownAt = 0;
+        __formSubmitting = false;
         const dismiss = document.getElementById('loadingDismissBtn');
         if (dismiss) dismiss.style.display = 'none';
         if (loadingWatchTimer) { clearTimeout(loadingWatchTimer); loadingWatchTimer = null; }
     }
+    // Catch unhandled errors and hide the loading overlay so the page doesn't stay locked.
+    window.addEventListener('error', function (e) {
+        if (loadingOverlay && loadingOverlay.classList.contains('show')) {
+            console.warn('Uncaught error while loading overlay was active — hiding overlay.', e.message || e);
+            hideLoading();
+        }
+    });
+    // Also catch unhandled promise rejections.
+    window.addEventListener('unhandledrejection', function (e) {
+        if (loadingOverlay && loadingOverlay.classList.contains('show')) {
+            console.warn('Unhandled promise rejection while loading overlay was active — hiding overlay.', e.reason || e);
+            hideLoading();
+        }
+    });
     window.showLoading = showLoading;
     window.hideLoading = hideLoading;
     document.addEventListener('click', function (e) {
@@ -1178,6 +1195,7 @@ function toggleNavGroup(groupId, btn) {
                 runFileAction({ url: href, method: 'GET' });
                 return;
             }
+            __formSubmitting = true;
             showLoading();
         });
     });
@@ -1187,6 +1205,11 @@ function toggleNavGroup(groupId, btn) {
             if (e.defaultPrevented) return;
             if (window.__disableGlobalLoading === true) return;
             if (form.hasAttribute('data-no-global-loading')) return;
+            // Prevent double-submit: if the loading overlay is already shown or a submit is in flight, stop here.
+            if (__formSubmitting) {
+                e.preventDefault();
+                return;
+            }
             const rawAction = form.getAttribute('action') || '';
             const action = rawAction.toLowerCase();
             const method = ((form.getAttribute('method') || 'GET') + '').toUpperCase();
@@ -1227,12 +1250,15 @@ function toggleNavGroup(groupId, btn) {
                 if (saveCtx) {
                     sessionStorage.setItem('pending_save_context', JSON.stringify(saveCtx));
                     sessionStorage.setItem('pending_save_feedback', '1');
+                    __formSubmitting = true;
                     startTaskProgress('Saving', 'Saving transaction...');
                     return;
                 }
+                __formSubmitting = true;
                 showLoading();
                 return;
             }
+            __formSubmitting = true;
             showLoading();
         });
     });
