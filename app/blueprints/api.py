@@ -11,6 +11,7 @@ import os, io, json, re, logging, calendar
 
 from models import *
 from app.services.api import *  # noqa
+from app.services.financial_ledgers import _client_snapshot_for
 from utils.audit import audit_log
 
 bp = Blueprint('api', __name__)
@@ -128,7 +129,7 @@ def api_client_financial_summary(client_code):
         resp.headers['Pragma'] = 'no-cache'
         resp.headers['Expires'] = '0'
         return resp
-    unified_ledger = build_client_financial_ledger(client)
+    unified_ledger = build_client_financial_ledger(client, snapshot=_client_snapshot_for(client))
     summary = {
         'balance': float(unified_ledger.get('closing_balance') or 0),
         'debit_total': float(unified_ledger.get('total_debit') or 0),

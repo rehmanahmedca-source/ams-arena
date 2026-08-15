@@ -291,6 +291,22 @@
             animation: spin 0.8s linear infinite;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* ---- Top-level transaction dialogs -----------------------------------
+           The sale sheet and other in-page Bootstrap modals sit at the default
+           modal z-index (1055) and paint above these dialogs purely because
+           they appear later in the DOM.  Transaction progress/result/reminder
+           dialogs are *global* UI and must always stack ABOVE any open form
+           modal, so they live on their own layer (below the 9999 loading
+           overlay, which remains the strongest global blocker). */
+        #taskProgressModal,
+        #taskResultModal,
+        #dueReminderModal {
+            z-index: 2600;
+        }
+        /* Backdrops are siblings appended to <body>, so they cannot inherit this
+           via a descendant rule; ensureTopModal() promotes the matching backdrop
+           in JS on show. */
     </style>
 </head>
 <body>
@@ -624,7 +640,27 @@
     let taskProgressModal = null;
     let taskResultModal = null;
     let taskProgressTimer = null;
+    let taskProgressWatchdog = null;
     let taskProgressValue = 0;
+
+    // Promote the transaction/reminder dialogs (and their backdrops) onto a
+    // dedicated layer ABOVE any in-page Bootstrap modal such as the full-screen
+    // sale sheet.  Both have the default modal z-index, so the sale sheet — which
+    // appears later in the DOM — used to paint on top of the progress dialog.
+    function ensureTopModal(modalEl, z) {
+        if (!modalEl || modalEl.dataset.amsTopModal === '1') return;
+        modalEl.dataset.amsTopModal = '1';
+        const promote = function () {
+            modalEl.style.zIndex = String(z);
+            // Bootstrap appends this modal's backdrop as the last .modal-backdrop.
+            setTimeout(function () {
+                const backdrops = document.querySelectorAll('.modal-backdrop');
+                if (backdrops.length) backdrops[backdrops.length - 1].style.zIndex = String(z - 10);
+            }, 0);
+        };
+        modalEl.addEventListener('show.bs.modal', promote);
+        modalEl.addEventListener('shown.bs.modal', promote);
+    }
 
     function openSidebar() {
         sidebar.classList.add('show');
@@ -677,20 +713,36 @@ function toggleNavGroup(groupId, btn) {
         // Reduced from 120s to 30s — users should not wait 2 minutes for a stuck overlay
         loadingWatchTimer = setTimeout(hideLoading, 30000);
     }
+    function lockForm(form, lock) {
+        // Immediate visual + behavioural submit lock: disable submit controls so
+        // a second click cannot fire another request, and re-enable them when the
+        // flow ends (validation failure / navigation interrupted).  The
+        // __formSubmitting latch below is the authoritative second guard.
+        if (!form) return;
+        form.classList.toggle('ams-submitting', !!lock);
+        form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(function (btn) {
+            btn.disabled = !!lock;
+        });
+    }
+    function unlockAllForms() {
+        document.querySelectorAll('form').forEach(function (f) { lockForm(f, false); });
+    }
     function hideLoading() {
         if (loadingOverlay) loadingOverlay.classList.remove('show');
         loadingShownAt = 0;
         __formSubmitting = false;
+        unlockAllForms();
         const dismiss = document.getElementById('loadingDismissBtn');
         if (dismiss) dismiss.style.display = 'none';
         if (loadingWatchTimer) { clearTimeout(loadingWatchTimer); loadingWatchTimer = null; }
     }
-    // Catch unhandled errors and hide the loading overlay so the page doesn't stay locked.
+    // Catch unhandled errors and release every overlay so the page never stays locked.
     window.addEventListener('error', function (e) {
         if (loadingOverlay && loadingOverlay.classList.contains('show')) {
             console.warn('Uncaught error while loading overlay was active — hiding overlay.', e.message || e);
             hideLoading();
         }
+        if (typeof closeTaskProgressNow === 'function') closeTaskProgressNow();
     });
     // Also catch unhandled promise rejections.
     window.addEventListener('unhandledrejection', function (e) {
@@ -698,6 +750,7 @@ function toggleNavGroup(groupId, btn) {
             console.warn('Unhandled promise rejection while loading overlay was active — hiding overlay.', e.reason || e);
             hideLoading();
         }
+        if (typeof closeTaskProgressNow === 'function') closeTaskProgressNow();
     });
     window.showLoading = showLoading;
     window.hideLoading = hideLoading;
@@ -840,6 +893,7 @@ function toggleNavGroup(groupId, btn) {
         if (!taskProgressModalEl) return null;
         if (!taskProgressModal) {
             taskProgressModal = new bootstrap.Modal(taskProgressModalEl, { backdrop: 'static', keyboard: false });
+            ensureTopModal(taskProgressModalEl, 2600);
         }
         return taskProgressModal;
     }
@@ -847,6 +901,7 @@ function toggleNavGroup(groupId, btn) {
         if (!taskResultModalEl) return null;
         if (!taskResultModal) {
             taskResultModal = new bootstrap.Modal(taskResultModalEl);
+            ensureTopModal(taskResultModalEl, 2600);
         }
         return taskResultModal;
     }
@@ -861,6 +916,7 @@ function toggleNavGroup(groupId, btn) {
         if (typeof text === 'string' && taskProgressText) taskProgressText.textContent = text;
     }
     function startTaskProgress(title, text) {
+        if (typeof hideLoading === 'function') hideLoading();  // one progress state at a time
         const modal = ensureTaskProgressModal();
         if (!modal) return;
         if (taskProgressTitle) taskProgressTitle.textContent = title || 'Processing';
@@ -871,9 +927,18 @@ function toggleNavGroup(groupId, btn) {
                 setTaskProgress(taskProgressValue + 3);
             }
         }, 250);
+        // Watchdog: a native POST should unload the page.  If the dialog is still
+        // open after this window, the request hung or the page never navigated —
+        // release the UI rather than leaving a permanent overlay.
+        if (taskProgressWatchdog) clearTimeout(taskProgressWatchdog);
+        taskProgressWatchdog = setTimeout(function () {
+            closeTaskProgressNow();
+            hideLoading();
+        }, 45000);
         modal.show();
     }
     function finishTaskProgress() {
+        if (taskProgressWatchdog) { clearTimeout(taskProgressWatchdog); taskProgressWatchdog = null; }
         if (taskProgressTimer) {
             clearInterval(taskProgressTimer);
             taskProgressTimer = null;
@@ -884,6 +949,7 @@ function toggleNavGroup(groupId, btn) {
         }, 250);
     }
     function closeTaskProgressNow() {
+        if (taskProgressWatchdog) { clearTimeout(taskProgressWatchdog); taskProgressWatchdog = null; }
         if (taskProgressTimer) {
             clearInterval(taskProgressTimer);
             taskProgressTimer = null;
@@ -903,6 +969,7 @@ function toggleNavGroup(groupId, btn) {
         }, 120);
     }
     function showTaskResult(success, headline, details) {
+        if (typeof hideLoading === 'function') hideLoading();
         const modal = ensureTaskResultModal();
         if (!modal) return;
         if (taskResultCard) {
@@ -1251,10 +1318,12 @@ function toggleNavGroup(groupId, btn) {
                     sessionStorage.setItem('pending_save_context', JSON.stringify(saveCtx));
                     sessionStorage.setItem('pending_save_feedback', '1');
                     __formSubmitting = true;
+                    lockForm(form, true);  // disable Save immediately
                     startTaskProgress('Saving', 'Saving transaction...');
                     return;
                 }
                 __formSubmitting = true;
+                lockForm(form, true);
                 showLoading();
                 return;
             }
@@ -1317,9 +1386,11 @@ function toggleNavGroup(groupId, btn) {
     window.addEventListener('focus', function() {
         dispatchFinancialRefresh('window-focus', null);
     });
-    setInterval(function() {
-        dispatchFinancialRefresh('interval', null);
-    }, 30000);
+    // NOTE: no unconditional timer here.  A fixed interval dispatched
+    // `pware:financial-refresh` on every page every 30s, which kept the
+    // client booking/financial widgets polling even when the user was idle.
+    // Financial widgets now refresh on real activity only: window focus,
+    // tab becoming visible, and after a transaction save.
 
     // Combobox logic for reuse in sub-pages
     function bindComboboxAnchor(inputId, listId) {
@@ -1674,6 +1745,14 @@ function toggleNavGroup(groupId, btn) {
     let dueReminderModal = null;
     let dueReminderIds = [];
     let dueModalVisible = false;
+    let dueCheckInFlight = false;
+
+    // Stable per-tab id so server logs (via the ?src= query param) and the
+    // browser console can tell "two tabs polling" apart from "two loops in one
+    // tab". Random, non-sensitive.
+    if (!window.__AMS_TAB_ID) {
+        window.__AMS_TAB_ID = Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
+    }
 
     function ensureAudioUnlocked() {
         try {
@@ -1753,6 +1832,7 @@ function toggleNavGroup(groupId, btn) {
         if (!modalEl) return;
         if (!dueReminderModal) {
             dueReminderModal = new bootstrap.Modal(modalEl, { backdrop: 'static', keyboard: false });
+            ensureTopModal(modalEl, 2600);
             modalEl.addEventListener('shown.bs.modal', () => { dueModalVisible = true; });
             modalEl.addEventListener('hidden.bs.modal', () => { dueModalVisible = false; });
         }
@@ -1761,15 +1841,38 @@ function toggleNavGroup(groupId, btn) {
         playAlarmFor10s();
     }
 
+    function isDuePollLeader() {
+        // Single controlled poller across open tabs: only the elected leader
+        // calls /api/notifications/due. The election self-heals via TTL when a
+        // leader tab is closed or backgrounded.
+        const KEY = 'ams_due_poll_leader';
+        const now = Date.now();
+        let leader = null;
+        try { leader = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_) {}
+        if (leader && leader.id && (now - (leader.ts || 0)) < 25000) {
+            return leader.id === window.__AMS_TAB_ID;
+        }
+        try { localStorage.setItem(KEY, JSON.stringify({ id: window.__AMS_TAB_ID, ts: now })); } catch (_) {}
+        return true;
+    }
+
     async function checkDueRemindersGlobal() {
-        if (dueModalVisible) return;
+        if (dueModalVisible || dueCheckInFlight) return;
+        if (document.visibilityState !== 'visible') return;  // no hidden-tab churn
+        if (!isDuePollLeader()) return;                       // one poller across tabs
+        dueCheckInFlight = true;
         try {
-            const res = await fetch('/api/notifications/due', { cache: 'no-store' });
+            const src = encodeURIComponent('due-reminder/poll/' + window.__AMS_TAB_ID);
+            console.debug('[AMS-POLL] notifications/due source=due-reminder reason=interval tab=' + window.__AMS_TAB_ID);
+            const res = await fetch('/api/notifications/due?src=' + src, { cache: 'no-store' });
             if (!res.ok) return;
             const items = await res.json();
             if (!items || !items.length) return;
             showDueReminderModal(items);
-        } catch (e) {}
+        } catch (e) {
+        } finally {
+            dueCheckInFlight = false;
+        }
     }
 
     window.addEventListener('click', ensureAudioUnlocked, { once: true });

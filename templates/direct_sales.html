@@ -567,6 +567,7 @@
                         <input type="hidden" name="create_invoice" id="addSaleCreateInvoiceHidden" value="1">
                         <input type="hidden" name="track_as_cash" id="addSaleTrackAsCashHidden" value="0">
                         <input type="hidden" name="draft_id" id="addSaleDraftId" value="">
+                        <input type="hidden" name="idempotency_key" id="addSaleIdempotencyKey" value="">
 
                         <div class="delivery-date-row mb-3">
                             <div class="delivery-section">
@@ -1611,6 +1612,12 @@ function removeSaleItemRow(btn) {
 // Global to store booking info
 let currentClientBookings = {};
 let currentClientBookingRates = {};
+// In-flight coalescing for the two side-panel lookups. Picking a client fires
+// both the combobox `after` hook and the input `change` listener; without this
+// the same /api/client_booking_status and /api/client_financial_summary calls
+// were issued twice (and the old 30s timer multiplied them further).
+let bookingStatusInflight = {};
+let financialSummaryInflight = {};
 const currencySymbol = "{{ currency_symbol|default('') }}";
 function formatDateTimeLocal(d) {
     const pad = (n) => String(n).padStart(2, '0');
@@ -1819,10 +1826,20 @@ function updateClientFinancialSummary(clientCode, containerId = 'clientFinancial
     if (!container) return;
     if (!clientCode) {
         container.innerHTML = '<p class="text-white-50 text-center mt-3 mb-0">Select a client to see running balance</p>';
+        delete financialSummaryInflight[containerId];
         return;
     }
 
-    fetch(`/api/client_financial_summary/${encodeURIComponent(clientCode)}`, { cache: 'no-store' })
+    // Collapse duplicate concurrent requests for the same client + container.
+    const key = containerId + '::' + (clientCode || '').trim();
+    if (financialSummaryInflight[key]) return;
+    financialSummaryInflight[key] = true;
+
+    const tab = (window.__AMS_TAB_ID || 'tab-unknown');
+    const src = encodeURIComponent('summary/' + containerId + '/' + tab);
+    console.debug('[AMS-POLL] client_financial_summary source=' + containerId + ' client=' + clientCode + ' tab=' + tab);
+
+    fetch(`/api/client_financial_summary/${encodeURIComponent(clientCode)}?src=${src}`, { cache: 'no-store' })
         .then(res => res.json())
         .then(data => {
             if (!data || !data.found) {
@@ -1865,6 +1882,9 @@ function updateClientFinancialSummary(clientCode, containerId = 'clientFinancial
         .catch(err => {
             console.error('Error fetching financial summary:', err);
             container.innerHTML = '<p class="text-danger text-center mt-3 mb-0">Error loading balance</p>';
+        })
+        .finally(() => {
+            delete financialSummaryInflight[key];
         });
 }
 
@@ -1882,6 +1902,14 @@ window.onSaleClientPicked = onSaleClientPicked;
 
 function updateBookingStatus(clientCode, bookingContainerId = 'bookingStatusContainer', financialContainerId = 'clientFinancialContainer') {
     const container = document.getElementById(bookingContainerId);
+
+    // Collapse duplicate concurrent requests for the same client + container
+    // (the combobox `after` hook and the input `change` listener both fire).
+    const bkey = bookingContainerId + '::' + (clientCode || '').trim();
+    if (clientCode && bookingStatusInflight[bkey]) {
+        return bookingStatusInflight[bkey];
+    }
+
     currentClientBookings = {}; // Reset
     currentClientBookingRates = {}; // Reset
     updateClientFinancialSummary(clientCode, financialContainerId);
@@ -1897,7 +1925,11 @@ function updateBookingStatus(clientCode, bookingContainerId = 'bookingStatusCont
         return Promise.resolve([]);
     }
 
-    return fetch(`/api/client_booking_status/${encodeURIComponent(clientCode)}`, { cache: 'no-store' })
+    const tab = (window.__AMS_TAB_ID || 'tab-unknown');
+    const bsrc = encodeURIComponent('booking/' + bookingContainerId + '/' + tab);
+    console.debug('[AMS-POLL] client_booking_status source=' + bookingContainerId + ' client=' + clientCode + ' tab=' + tab);
+
+    const promise = fetch(`/api/client_booking_status/${encodeURIComponent(clientCode)}?src=${bsrc}`, { cache: 'no-store' })
         .then(res => res.json())
         .then(data => {
             if (!container) {
@@ -1971,8 +2003,14 @@ function updateBookingStatus(clientCode, bookingContainerId = 'bookingStatusCont
             });
             container.innerHTML = html;
             
-            // Re-check all existing rows
-            document.querySelectorAll('.compact-item-row').forEach(row => checkItemBookingStatus(row));
+            // Re-check only the rows that belong to the same form as this
+            // container (add form vs edit modal) so one sale's booking status
+            // never rewrites another form's line badges / rate locks.
+            const scopeForm = container ? container.closest('form') : null;
+            const scopeRows = scopeForm
+                ? scopeForm.querySelectorAll('.compact-item-row')
+                : document.querySelectorAll('.compact-item-row');
+            scopeRows.forEach(row => checkItemBookingStatus(row));
             return data;
         })
         .catch(err => {
@@ -1981,13 +2019,24 @@ function updateBookingStatus(clientCode, bookingContainerId = 'bookingStatusCont
                 container.innerHTML = '<p class="text-danger text-center mt-5">Error loading status</p>';
             }
             return [];
+        })
+        .finally(() => {
+            delete bookingStatusInflight[bkey];
         });
+
+    bookingStatusInflight[bkey] = promise;
+    return promise;
 }
 
 function refreshDirectSaleClientWidgets() {
     const codeInput = document.getElementById('addSaleClientCode');
     const code = (codeInput && codeInput.value ? codeInput.value : '').trim();
     if (!code) return;
+    // Only refresh for a fully-known client. Never issue a booking-status
+    // request for a partially typed search string (e.g. "paf") or unknown text.
+    const known = (typeof knownClientCodes !== 'undefined' && knownClientCodes.has(code)) ||
+                  (typeof knownClientNames !== 'undefined' && knownClientNames.has(code));
+    if (!known) return;
     updateBookingStatus(code);
 }
 
@@ -2012,8 +2061,10 @@ function updateClientInputVisibility() {
     const isOpenKhata = saleCategory.value === 'Open Khata';
     const isManualChecked = manualClientCheck.checked;
 
-    // Re-evaluate all rows for booking status
-    document.querySelectorAll('.compact-item-row').forEach(row => checkItemBookingStatus(row));
+    // Re-evaluate rows for booking status — only in the add form this control
+    // belongs to (never the edit modals rendered on the same page).
+    const addFormOnly = document.querySelector('#addSaleModal form');
+    (addFormOnly ? addFormOnly.querySelectorAll('.compact-item-row') : document.querySelectorAll('.compact-item-row')).forEach(row => checkItemBookingStatus(row));
     
     // Show manual toggle only for cash mode.
     manualToggleDiv.style.display = isCash ? 'block' : 'none';
@@ -2623,24 +2674,50 @@ function attachFormListeners(form) {
     syncDeliveryRentTotal(form);
     if (!form.dataset.salePrecheckBound) {
         form.dataset.salePrecheckBound = '1';
+        // Register in the CAPTURE phase.  The global page loader also listens
+        // for `submit` (bubble phase) and latches `__formSubmitting=true` on the
+        // first event.  Running first lets us `preventDefault()` the initial
+        // submit before that latch is set, so the follow-up `requestSubmit()`
+        // is not swallowed and the sale form no longer freezes on "Saving…".
+        const setSubmitting = (on) => {
+            form.dataset.submitting = on ? '1' : '';
+            form.querySelectorAll('button[type="submit"]').forEach((b) => { b.disabled = !!on; });
+        };
         form.addEventListener('submit', function (e) {
             if (form.dataset.skipValidation === '1') {
                 form.dataset.skipValidation = '';
                 return;
             }
+            // A submission is already in flight for this sheet — ignore any
+            // further Save clicks (explicit guard, not just button disable).
+            if (form.dataset.submitting === '1') {
+                e.preventDefault();
+                return;
+            }
             if (form.dataset.bookingRefreshDone === '1') {
+                // Validation has passed once; allow this (re)submit through.
+                // The global submit latch in layout.html is the final guard.
                 form.dataset.bookingRefreshDone = '';
-                if (!validateSaleFormBeforeSubmit(form)) e.preventDefault();
+                if (!validateSaleFormBeforeSubmit(form)) {
+                    setSubmitting(false);  // release lock so the user can fix
+                    e.preventDefault();
+                } else {
+                    setSubmitting(true);   // stay locked while POST is in flight
+                }
                 return;
             }
             e.preventDefault();
+            setSubmitting(true);  // lock immediately: disable Save, block re-entry
             const codeEl = form.querySelector('input[name="client_code"]');
             const code = (codeEl && codeEl.value ? codeEl.value : '').trim();
             const bookingId = form.dataset.bookingContainer || 'bookingStatusContainer';
             const financialId = form.dataset.financialContainer || 'clientFinancialContainer';
             const proceed = () => {
                 form.querySelectorAll('.compact-item-row').forEach((row) => checkItemBookingStatus(row));
-                if (!validateSaleFormBeforeSubmit(form)) return;
+                if (!validateSaleFormBeforeSubmit(form)) {
+                    setSubmitting(false);  // validation failed — release the lock
+                    return;
+                }
                 form.dataset.bookingRefreshDone = '1';
                 form.requestSubmit();
             };
@@ -2649,7 +2726,7 @@ function attachFormListeners(form) {
             } else {
                 proceed();
             }
-        });
+        }, { capture: true });
     }
 }
 
@@ -2699,7 +2776,13 @@ function validateSaleFormBeforeSubmit(form) {
     }
 
     const billNo = (form.querySelector('[name="manual_bill_no"]')?.value || '').trim();
-    if (isCreditStyle && !billNo) {
+    // A billed sale is acceptable with either a manual bill number or an
+    // auto-generated invoice.  The backend `add_direct_sale` accepts both, so
+    // the form must not block a valid Due / Booked+Due save when an invoice
+    // will be generated automatically.
+    const createInvoiceEl = form.querySelector('[name="create_invoice"]');
+    const willHaveBill = billNo || (createInvoiceEl && (createInvoiceEl.value || '').trim() === '1');
+    if (isCreditStyle && !willHaveBill) {
         issues.push('Manual Bill No is required for this sale type.');
     }
 
@@ -2783,6 +2866,28 @@ function resetAddSaleForm() {
     const draftIdInput = document.getElementById('addSaleDraftId');
     if (draftIdInput) draftIdInput.value = '';
 
+    // Fresh duplicate-submission key per form-open.  The backend ignores a
+    // re-submitted key, so a double click or network retry cannot create two
+    // sales from the same sheet.
+    const idemInput = document.getElementById('addSaleIdempotencyKey');
+    if (idemInput) {
+        let key = '';
+        try {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                key = window.crypto.randomUUID();
+            }
+        } catch (_) { /* fall through */ }
+        if (!key) {
+            key = 'sale-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+        }
+        idemInput.value = key;
+    }
+
+    // Re-enable Save + clear the in-flight flag so a previously failed submit
+    // never leaves the sheet locked.
+    form.dataset.submitting = '';
+    form.querySelectorAll('button[type="submit"]').forEach(function (b) { b.disabled = false; });
+
     // Clear Client Search & Display
     const clientCodeInput = document.getElementById('addSaleClientCode');
     const clientNameHidden = document.getElementById('addSaleClientNameHidden');
@@ -2858,7 +2963,22 @@ function applyAddSaleDraft(draft) {
     setField('client_code', draft.client_code || '');
     setField('client_name', draft.client_name || '');
     const nameDisplay = document.getElementById('addSaleClientNameDisplay');
-    if (nameDisplay && draft.client_name) nameDisplay.innerText = draft.client_name;
+    let displayName = draft.client_name || '';
+    if (!displayName && draft.client_code) {
+        // The draft keeps the client *code* even when the hidden name field was
+        // empty at submit time. Restore the display name from the combobox so
+        // the selected client is visible again after a validation resume.
+        const combo = document.getElementById('addSaleCombobox');
+        const items = combo ? combo.querySelectorAll('.combobox-item') : [];
+        for (const item of items) {
+            if ((item.getAttribute('data-client-code') || '').trim() === draft.client_code) {
+                displayName = item.getAttribute('data-combo-name') || '';
+                break;
+            }
+        }
+    }
+    if (nameDisplay) nameDisplay.innerText = displayName;
+    if (displayName) setField('client_name', displayName);
     setField('manual_client_name', draft.manual_client_name || '');
     setField('sale_date', draft.sale_date || '');
     setField('manual_bill_no', draft.manual_bill_no || '');
