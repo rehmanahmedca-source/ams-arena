@@ -50,6 +50,7 @@ tools/
     repair_direct_sale_duplicates.py  Void duplicate sale/entry/pending rows (raw sqlite3)
     repair_exact_bill_duplicates.py   Remove exact duplicate items (raw sqlite3)
     fix_accounts_and_test.py    Reset User passwords/roles
+    recover_corrupt_db.py       Salvage a corrupt SQLite DB (.recover) or reset it (--fresh)
 
   tests_isolated/             ← Integration tests. Require AMS_TEST_DB env var.
     test_isolation_guard.py     Guard — aborts if AMS_TEST_DB not set
