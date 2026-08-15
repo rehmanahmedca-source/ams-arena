@@ -323,6 +323,117 @@ def _ensure_user_permission_defaults():
         db.session.rollback()
 
 
+def _backfill_accounting_integrity_columns():
+    """Non-destructively initialise exact-money and source/audit metadata.
+
+    Existing REAL values and historical names are preserved.  The explicit
+    account opening baseline is inferred as ``stored current - active ledger
+    net`` so enabling reproducible ledgers does not change any live balance.
+    """
+    from utils.money import from_minor, to_minor
+
+    try:
+        # Versioned ORM rows require a non-NULL committed version before they
+        # can be safely loaded and updated. Initialise it with raw SQL first so
+        # legacy NULL rows do not trigger an autoflush/version predicate error.
+        for table_name in ('account', 'payment', 'supplier_payment'):
+            db.session.execute(text(
+                f"UPDATE {table_name} SET revision = 1 WHERE revision IS NULL"
+            ))
+        db.session.commit()
+        db.session.expire_all()
+
+        # Stable payment party/source identities and exact minor-unit mirrors.
+        clients_by_name = {
+            (c.name or '').strip().lower(): c.id
+            for c in Client.query.all() if (c.name or '').strip()
+        }
+        for p in Payment.query.all():
+            if getattr(p, 'amount_minor', None) is None:
+                p.amount_minor = to_minor(p.amount or 0)
+            if getattr(p, 'discount_minor', None) is None:
+                p.discount_minor = to_minor(p.discount or 0)
+            if not getattr(p, 'client_id', None):
+                p.client_id = clients_by_name.get((p.client_name or '').strip().lower())
+            note = p.note or ''
+            material_match = re.search(r'\[MATERIAL_RETURN:(\d+)\]', note, re.IGNORECASE)
+            if material_match:
+                p.payment_type = 'Material Return'
+                p.source_type = p.source_type or 'MaterialReturn'
+                p.source_id = p.source_id or int(material_match.group(1))
+            elif float(p.amount or 0) < 0 or (p.method or '').strip().lower() == 'refund':
+                p.payment_type = 'Refund'
+            elif float(p.amount or 0) == 0 and float(p.discount or 0) > 0:
+                p.payment_type = 'Waive-Off'
+            else:
+                p.payment_type = p.payment_type or 'Receipt'
+            p.revision = p.revision or 1
+
+        for p in SupplierPayment.query.all():
+            if getattr(p, 'amount_minor', None) is None:
+                p.amount_minor = to_minor(p.amount or 0)
+            marker = re.search(r'\[AUTO_GRN_PAY:(\d+)\]', p.note or '', re.IGNORECASE)
+            if marker:
+                p.source_type = p.source_type or 'GRN'
+                p.source_id = p.source_id or int(marker.group(1))
+            p.payment_type = p.payment_type or 'Payment'
+            p.revision = p.revision or 1
+
+        # Add structured source identity to linked ledger rows while preserving
+        # the human-readable legacy marker in ``note``.
+        source_patterns = (
+            ('Payment', r'\[SRC:Payment:(\d+)\]'),
+            ('Payment', r'\[SRC:ClientRefund:(\d+)\]'),
+            ('SupplierPayment', r'\[SRC:SupplierPayment:(\d+)\]'),
+        )
+        for tx in AccountTransaction.query.all():
+            if getattr(tx, 'amount_minor', None) is None:
+                tx.amount_minor = to_minor(tx.amount or 0)
+            if not getattr(tx, 'source_type', None):
+                for source_type, pattern in source_patterns:
+                    match = re.search(pattern, tx.note or '', re.IGNORECASE)
+                    if match:
+                        tx.source_type = source_type
+                        tx.source_id = int(match.group(1))
+                        break
+
+        # Infer a no-change opening baseline for every legacy account.
+        for account in Account.query.all():
+            account.balance_minor = to_minor(account.balance or 0)
+            account.revision = account.revision or 1
+            if account.opening_balance is None:
+                incoming = sum(
+                    (tx.amount_minor if tx.amount_minor is not None else to_minor(tx.amount or 0))
+                    for tx in account.incoming_transactions if not tx.is_void
+                )
+                outgoing = sum(
+                    (tx.amount_minor if tx.amount_minor is not None else to_minor(tx.amount or 0))
+                    for tx in account.outgoing_transactions if not tx.is_void
+                )
+                opening_minor = int(account.balance_minor or 0) - incoming + outgoing
+                account.opening_balance_minor = opening_minor
+                account.opening_balance = float(from_minor(opening_minor))
+                account.opening_balance_date = account.created_at
+            elif account.opening_balance_minor is None:
+                account.opening_balance_minor = to_minor(account.opening_balance or 0)
+
+        # SQLite ALTER TABLE cannot add a UNIQUE constraint.  Partial unique
+        # indexes make retried create requests race-safe while allowing NULLs.
+        db.session.flush()
+        db.session.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_idempotency_key "
+            "ON payment(idempotency_key) WHERE idempotency_key IS NOT NULL"
+        ))
+        db.session.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_payment_idempotency_key "
+            "ON supplier_payment(idempotency_key) WHERE idempotency_key IS NOT NULL"
+        ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.getLogger(__name__).exception('Accounting integrity metadata backfill failed')
+
+
 def _ensure_account_type_compat():
     """
     Keep legacy `account.type` and newer `account.account_type` consistent.
@@ -389,6 +500,10 @@ def _bootstrap_database():
         db.session.rollback()
     try:
         _ensure_account_type_compat()
+    except Exception:
+        pass
+    try:
+        _backfill_accounting_integrity_columns()
     except Exception:
         pass
     try:

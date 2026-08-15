@@ -228,7 +228,7 @@ def grn():
     else:
         grns = query.order_by(GRN.date_posted.desc()).all()
 
-    materials = Material.query.order_by(Material.name.asc()).all()
+    materials = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
     suppliers_list = Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all()
 

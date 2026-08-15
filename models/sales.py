@@ -69,24 +69,40 @@ class BookingAllocation(db.Model):
 
 class Payment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    # ``client_name`` is retained as an immutable historical display snapshot;
+    # ``client_id`` supplies stable identity for new and backfilled records.
+    client_id = db.Column(db.Integer, db.ForeignKey('client.id'), nullable=True, index=True)
     client_name = db.Column(db.String(100))
     amount = db.Column(db.Float, default=0)
+    amount_minor = db.Column(db.BigInteger, nullable=True)  # authoritative paisa/cents
     method = db.Column(db.String(50))
+    payment_type = db.Column(db.String(30), default='Receipt', index=True)  # Receipt | Refund | Material Return | Waive-Off
+    source_type = db.Column(db.String(50), nullable=True, index=True)
+    source_id = db.Column(db.Integer, nullable=True, index=True)
     manual_bill_no = db.Column(db.String(50))
     auto_bill_no = db.Column(db.String(50))
     photo_path = db.Column(db.String(200))
     photo_url = db.Column(db.String(500))
     date_posted = db.Column(db.DateTime, default=pk_model_now, index=True)
-    is_void = db.Column(db.Boolean, default=False)
+    is_void = db.Column(db.Boolean, default=False, index=True)
     note = db.Column(db.String(500))
     discount = db.Column(db.Float, default=0)
+    discount_minor = db.Column(db.BigInteger, nullable=True)
     discount_reason = db.Column(db.String(200))
     bank_name = db.Column(db.String(100))
     account_name = db.Column(db.String(100))
     account_no = db.Column(db.String(50))
     payment_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True)
+    idempotency_key = db.Column(db.String(64), nullable=True, unique=True, index=True)
+    revision = db.Column(db.Integer, default=1, nullable=True)
+    created_by = db.Column(db.String(80))
+    updated_by = db.Column(db.String(80))
+    created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
+    updated_at = db.Column(db.DateTime, default=pk_model_now, onupdate=pk_model_now, index=True)
 
+    client = db.relationship('Client', foreign_keys=[client_id], backref='payment_records')
     payment_account = db.relationship('Account', foreign_keys=[payment_account_id], backref='client_payments')
+    __mapper_args__ = {'version_id_col': revision}
 
 
 class WaiveOff(db.Model):

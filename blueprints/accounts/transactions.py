@@ -1,6 +1,27 @@
 """transactions — split from accounts.py."""
 from ._common import *  # noqa
 
+
+def _audit_pending_account_transactions():
+    """Append atomic structured audit events for newly posted ledger rows."""
+    pending = [obj for obj in list(db.session.new) if isinstance(obj, AccountTransaction)]
+    if not pending:
+        return
+    from utils.accounting_audit import record_accounting_audit
+    db.session.flush()
+    for tx in pending:
+        record_accounting_audit(
+            current_user, action='Create', entity_type='AccountTransaction', entity_id=tx.id,
+            after={'id': tx.id, 'type': tx.transaction_type, 'amount': tx.amount,
+                   'from_account_id': tx.from_account_id, 'to_account_id': tx.to_account_id,
+                   'description': tx.description, 'note': tx.note,
+                   'source_type': tx.source_type, 'source_id': tx.source_id},
+            amount_after=tx.amount,
+            account_after_id=tx.to_account_id or tx.from_account_id,
+            reason=tx.note,
+        )
+
+
 @accounts_bp.route('/transfers')
 @login_required
 def transfers():
@@ -39,28 +60,59 @@ def void_transaction(tx_id):
 @accounts_bp.route('/transactions/<int:tx_id>/delete', methods=['POST'])
 @login_required
 def delete_account_transaction(tx_id):
+    """Soft-void an entry or delegate to its canonical source record."""
     tx = AccountTransaction.query.get_or_404(tx_id)
     try:
-        if not tx.is_void:
-            _reverse_balance_effect(tx)
+        if tx.reconciliation_id or (tx.source_type or '') == 'AccountReconciliation':
+            raise ValueError('Reconciliation adjustments are immutable and cannot be deleted.')
+        source_type = (tx.source_type or '').strip()
+        source_id = tx.source_id
         note_txt = tx.note or ''
-        pay_match = re.search(r'\[SRC:Payment:(\d+)\]', note_txt, flags=re.IGNORECASE)
-        if pay_match:
-            p = Payment.query.get(int(pay_match.group(1)))
-            if p:
-                from app.services.void_rebuild import hard_delete_transaction
-                hard_delete_transaction('Payment', p.id)
-        sp_match = re.search(r'\[SRC:SupplierPayment:(\d+)\]', note_txt, flags=re.IGNORECASE)
-        if sp_match:
-            sp = SupplierPayment.query.get(int(sp_match.group(1)))
-            if sp:
-                sp.is_void = True
-        if db.session.get(AccountTransaction, tx_id):
-            db.session.delete(tx)
+        if not source_type:
+            pay_match = re.search(r'\[SRC:(?:Payment|ClientRefund):(\d+)\]', note_txt, flags=re.IGNORECASE)
+            sp_match = re.search(r'\[SRC:SupplierPayment:(\d+)\]', note_txt, flags=re.IGNORECASE)
+            if pay_match:
+                source_type, source_id = 'Payment', int(pay_match.group(1))
+            elif sp_match:
+                source_type, source_id = 'SupplierPayment', int(sp_match.group(1))
+
+        if source_type == 'Payment' and source_id:
+            from app.services.payments_crud import delete_client_payment
+            payment = db.session.get(Payment, source_id)
+            if not payment or not delete_client_payment(payment, actor=current_user):
+                raise ValueError('The linked payment is already deleted or missing.')
+        elif source_type == 'SupplierPayment' and source_id:
+            from app.services.payments_crud import delete_supplier_payment
+            payment = db.session.get(SupplierPayment, source_id)
+            if not payment or not delete_supplier_payment(payment, actor=current_user):
+                raise ValueError('The linked supplier payment is already deleted or missing.')
+        else:
+            from app.services.accounting import _void_account_tx
+            from app.services.payments_crud import _assert_period_open
+            from utils.accounting_audit import record_accounting_audit
+            if tx.is_void:
+                raise ValueError('This account entry is already deleted.')
+            for account_id in {tx.from_account_id, tx.to_account_id}:
+                _assert_period_open(account_id, tx.date_posted, operation='deleted')
+            before = {'id': tx.id, 'type': tx.transaction_type, 'amount': tx.amount,
+                      'from_account_id': tx.from_account_id, 'to_account_id': tx.to_account_id,
+                      'description': tx.description, 'note': tx.note, 'is_void': False}
+            _void_account_tx(tx)
+            tx.voided_by = getattr(current_user, 'username', None)
+            tx.voided_at = pk_now()
+            record_accounting_audit(
+                current_user, action='Delete', entity_type='AccountTransaction', entity_id=tx.id,
+                before=before, after={**before, 'is_void': True},
+                amount_before=tx.amount, amount_after=0,
+                account_before_id=tx.from_account_id or tx.to_account_id,
+                reason=tx.note,
+            )
+        _audit_pending_account_transactions()
         db.session.commit()
-        audit_log(current_user, 'account.transaction.delete',
-                  f'tx_id={tx_id}, type={tx.transaction_type}, amount={tx.amount}')
-        flash('Account entry deleted and balances corrected.', 'success')
+        flash('Account entry reversed. The original record and audit history were retained.', 'success')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
     except Exception as exc:
         db.session.rollback()
         logger.exception('Delete account transaction failed')
@@ -73,7 +125,12 @@ def delete_account_transaction(tx_id):
 def edit_account_transaction(tx_id):
     tx = AccountTransaction.query.get_or_404(tx_id)
     try:
-        new_amount = float(request.form.get('amount', tx.amount) or 0)
+        if tx.reconciliation_id or tx.source_type in ('Payment', 'SupplierPayment', 'AccountReconciliation') or re.search(r'\[SRC:(?:Payment|ClientRefund|SupplierPayment):\d+\]', tx.note or '', re.IGNORECASE):
+            raise ValueError('Linked financial entries must be edited from their shared source form; reconciliation entries are immutable.')
+        from app.services.payments_crud import _assert_period_open
+        for account_id in {tx.from_account_id, tx.to_account_id}:
+            _assert_period_open(account_id, tx.date_posted, operation='edited')
+        new_amount = _money_round(request.form.get('amount', tx.amount) or 0)
         if new_amount <= 0:
             raise ValueError('Amount must be greater than zero.')
         new_desc = (request.form.get('description') or tx.description or '').strip()
@@ -87,9 +144,16 @@ def edit_account_transaction(tx_id):
         else:
             new_dt = tx.date_posted
 
+        from app.services.accounting import _apply_account_tx_effect, _reverse_account_tx_effect
+        from utils.accounting_audit import record_accounting_audit
+        from utils.money import to_minor
+        before = {'id': tx.id, 'amount': tx.amount, 'description': tx.description, 'note': tx.note,
+                  'date_posted': tx.date_posted, 'from_account_id': tx.from_account_id,
+                  'to_account_id': tx.to_account_id}
         if not tx.is_void:
-            _reverse_balance_effect(tx)
+            _reverse_account_tx_effect(tx)
         tx.amount = new_amount
+        tx.amount_minor = to_minor(new_amount)
         tx.description = new_desc
         tx.note = new_note
         tx.date_posted = new_dt
@@ -100,16 +164,18 @@ def edit_account_transaction(tx_id):
             tx.from_account_id = from_id
         if to_id:
             tx.to_account_id = to_id
-        if tx.to_account_id:
-            a = Account.query.get(tx.to_account_id)
-            if a:
-                a.balance = float(a.balance or 0) + float(tx.amount or 0)
-        if tx.from_account_id:
-            a = Account.query.get(tx.from_account_id)
-            if a:
-                a.balance = float(a.balance or 0) - float(tx.amount or 0)
+        _apply_account_tx_effect(tx)
+        after = {'id': tx.id, 'amount': tx.amount, 'description': tx.description, 'note': tx.note,
+                 'date_posted': tx.date_posted, 'from_account_id': tx.from_account_id,
+                 'to_account_id': tx.to_account_id}
+        record_accounting_audit(
+            current_user, action='Edit', entity_type='AccountTransaction', entity_id=tx.id,
+            before=before, after=after, amount_before=before['amount'], amount_after=after['amount'],
+            account_before_id=before['from_account_id'] or before['to_account_id'],
+            account_after_id=after['from_account_id'] or after['to_account_id'], reason=new_note,
+        )
+        _audit_pending_account_transactions()
         db.session.commit()
-        audit_log(current_user, 'account.transaction.edit', f'tx_id={tx.id}, amount={tx.amount}')
         flash('Account entry updated.', 'success')
     except Exception as exc:
         db.session.rollback()
@@ -162,52 +228,16 @@ def add_transaction():
                 if not client:
                     raise ValueError('Client not found or suspended. Please select a valid client from the dues list.')
 
-                if amount > 0:
-                    receive_account.balance = float(receive_account.balance or 0) + amount
-
-                payment = Payment(
-                    client_name=client.name,
-                    amount=amount,
-                    method=(method or 'Cash') if amount > 0 else 'Waive-Off',
-                    note=note,
-                    discount=discount,
-                    discount_reason='Accounts receive transaction',
-                    date_posted=tx_date,
-                    account_name=(receive_account.name if receive_account else ''),
-                    bank_name=((receive_account.bank_name or '') if receive_account else ''),
-                    account_no=((receive_account.account_number or '') if receive_account else ''),
+                from app.services.payments_crud import save_client_payment
+                payment, _ = save_client_payment(
+                    client_code=client.code, client_name=client.name,
+                    amount=amount, discount=discount,
+                    discount_reason=('Accounts receive transaction' if discount > 0 else ''),
+                    payment_type=('Receipt' if amount > 0 else 'Waive-Off'),
+                    method=method or 'Cash',
                     payment_account_id=(receive_account.id if receive_account else None),
-                    auto_bill_no=get_next_bill_no(AUTO_BILL_NAMESPACES['PAYMENT'])
+                    date_posted=tx_date, note=note, actor=current_user,
                 )
-                db.session.add(payment)
-                db.session.flush()
-                pay_marker = f"[SRC:Payment:{payment.id}]"
-
-                if amount > 0:
-                    account_tx = AccountTransaction(
-                        from_account_id=None,
-                        to_account_id=receive_account.id,
-                        amount=amount,
-                        description=f"Client payment received from {client.name}",
-                        note=" ".join([x for x in [(note or '').strip(), pay_marker] if x]).strip(),
-                        transaction_type='Receipt',
-                        date_posted=tx_date
-                    )
-                    db.session.add(account_tx)
-
-                if discount > 0:
-                    discount_tx = AccountTransaction(
-                        from_account_id=None,
-                        to_account_id=None,
-                        amount=discount,
-                        description=f"Waive-off loss for {client.name}",
-                        note=" ".join([x for x in [(note or 'Discount as company loss').strip(), f"{pay_marker}:LOSS"] if x]).strip(),
-                        transaction_type='Loss',
-                        date_posted=tx_date
-                    )
-                    db.session.add(discount_tx)
-
-                _apply_payment_to_pending_bills(client, amount, discount)
                 account_label = receive_account.name if receive_account else 'discount-only'
                 audit_log(current_user, 'account.transaction.receive', f'source_category=client_ledger, client={client.name}, account={account_label}, amount={amount}, discount={discount}')
 
@@ -267,6 +297,7 @@ def add_transaction():
                 db.session.add(account_tx)
                 audit_log(current_user, 'account.transaction.receive', f'source_category={category_exists.name}, from={from_account.name}, to={receive_account.name}, amount={amount}')
 
+            _audit_pending_account_transactions()
             db.session.commit()
             flash('Receive transaction recorded successfully.', 'success')
 
@@ -286,9 +317,8 @@ def add_transaction():
             if float(from_account.balance or 0) < amount:
                 raise ValueError('Insufficient balance in selected source account.')
 
-            from_account.balance = float(from_account.balance or 0) - amount
-
             if pay_target == 'company_transfer':
+                from_account.balance = _money_round(float(from_account.balance or 0) - amount)
                 to_account = Account.query.get(to_account_id) if to_account_id else None
                 if not _is_account_active(to_account):
                     raise ValueError('Please select a valid destination account.')
@@ -318,31 +348,14 @@ def add_transaction():
                 if not supplier:
                     raise ValueError('Please select a valid supplier.')
 
-                sp = SupplierPayment(
-                    supplier_id=supplier.id,
-                    amount=amount,
-                    method=method or 'Cash',
-                    note=note,
-                    date_posted=tx_date,
-                    bank_name=(from_account.bank_name or ''),
-                    account_name=(from_account.account_holder_name or from_account.name or ''),
-                    account_no=(from_account.account_number or ''),
-                    payment_account_id=from_account.id
+                if not supplier.is_active:
+                    raise ValueError('The selected supplier is suspended.')
+                from app.services.payments_crud import save_supplier_payment
+                sp, _ = save_supplier_payment(
+                    supplier_id=supplier.id, amount=amount, method=method or 'Cash',
+                    payment_account_id=from_account.id, date_posted=tx_date,
+                    note=note, actor=current_user,
                 )
-                db.session.add(sp)
-                db.session.flush()
-                sp_marker = f"[SRC:SupplierPayment:{sp.id}]"
-
-                tx = AccountTransaction(
-                    from_account_id=from_account.id,
-                    to_account_id=None,
-                    amount=amount,
-                    description=f'Supplier payment to {supplier.name}',
-                    note=" ".join([x for x in [(note or '').strip(), sp_marker] if x]).strip(),
-                    transaction_type='Supplier Payment',
-                    date_posted=tx_date
-                )
-                db.session.add(tx)
                 audit_log(current_user, 'account.transaction.supplier_payment', f'from={from_account.name}, supplier={supplier.name}, amount={amount}')
                 flash('Supplier payment recorded successfully.', 'success')
             elif pay_target == 'client_refund':
@@ -356,44 +369,15 @@ def add_transaction():
                 if not client:
                     raise ValueError('Please select a valid client.')
 
-                # Create a real ledger Payment row (negative) so client ledger shows
-                # the refund, and then create the AccountTransaction cash-out.
-                # Do NOT generate an auto_bill_no for this refund Payment so no SB-CP
-                # rows are created. Mark it as method='Refund' so cash reports skip it.
-                payment = Payment(
-                    client_name=client.name,
-                    amount=-float(amount or 0),
-                    method='Refund',
-                    note=note,
-                    discount=0,
-                    discount_reason='Client refund',
-                    date_posted=tx_date,
-                    account_name=(from_account.name or ''),
-                    bank_name=(from_account.bank_name or ''),
-                    account_no=(from_account.account_number or ''),
-                    payment_account_id=from_account.id,
-                    auto_bill_no=None
+                if not client.is_active:
+                    raise ValueError('The selected client is suspended.')
+                from app.services.payments_crud import save_client_payment
+                payment, _ = save_client_payment(
+                    client_code=client.code, client_name=client.name,
+                    amount=amount, discount=0, payment_type='Refund',
+                    method=method or 'Cash', payment_account_id=from_account.id,
+                    date_posted=tx_date, note=note, actor=current_user,
                 )
-                db.session.add(payment)
-                db.session.flush()
-                pay_marker = f"[SRC:ClientRefund:{payment.id}]"
-
-                tx = AccountTransaction(
-                    from_account_id=from_account.id,
-                    to_account_id=None,
-                    amount=amount,
-                    description=f'Client refund to {client.name}',
-                    note=" ".join([x for x in [(note or '').strip(), pay_marker] if x]).strip(),
-                    transaction_type='Payment',
-                    date_posted=tx_date
-                )
-                db.session.add(tx)
-                # Rebuild pending bills for the client so ledger/pending view reflects this refund
-                try:
-                    from app.services.void_rebuild import rebuild_pending_bills
-                    rebuild_pending_bills(client_id=client.id)
-                except Exception:
-                    pass
                 audit_log(current_user, 'account.transaction.client_refund', f'from={from_account.name}, client={client.name}, amount={amount}')
                 flash('Client refund recorded successfully.', 'success')
             elif pay_target == 'loan':
@@ -406,8 +390,8 @@ def add_transaction():
                 if to_account.id == from_account.id:
                     raise ValueError('Source and destination accounts cannot be the same.')
 
-                # from_account already debited above; now credit loan account so negative liability decreases
-                to_account.balance = float(to_account.balance or 0) + amount
+                from_account.balance = _money_round(float(from_account.balance or 0) - amount)
+                to_account.balance = _money_round(float(to_account.balance or 0) + amount)
 
                 tx = AccountTransaction(
                     from_account_id=from_account.id,
@@ -432,6 +416,7 @@ def add_transaction():
                     else:
                         target_label = 'Other Payment'
 
+                from_account.balance = _money_round(float(from_account.balance or 0) - amount)
                 tx_type = 'Expense' if pay_target in ['personal_expense', 'other_expense'] else 'Payment'
                 tx = AccountTransaction(
                     from_account_id=from_account.id,
@@ -446,6 +431,7 @@ def add_transaction():
                 audit_log(current_user, 'account.transaction.pay', f'from={from_account.name}, target={target_label}, amount={amount}')
                 flash('Outgoing payment recorded successfully.', 'success')
 
+            _audit_pending_account_transactions()
             db.session.commit()
         else:
             raise ValueError('Invalid transaction type selected.')
@@ -466,42 +452,51 @@ def add_transaction():
 def add_transfer():
     """Add a new account transfer."""
     if request.method == 'POST':
-        from_account_id = request.form.get('from_account')
-        to_account_id = request.form.get('to_account')
-        amount = float(request.form.get('amount'))
-        description = request.form.get('description')
-        note = request.form.get('note')
-        
-        if from_account_id and to_account_id and amount > 0:
-            # Update account balances
-            from_account = db.session.get(Account, int(from_account_id))
-            to_account = db.session.get(Account, int(to_account_id))
-            
-            if from_account and to_account and from_account.balance >= amount:
-                from_account.balance -= amount
-                to_account.balance += amount
-                
-                transaction = AccountTransaction(
-                    from_account_id=from_account_id,
-                    to_account_id=to_account_id,
-                    amount=amount,
-                    description=description,
-                    note=note,
-                    transaction_type='Transfer'
-                )
-                db.session.add(transaction)
-                db.session.commit()
-                
-                audit_log(current_user, 'account.transfer', f'from={from_account.name}, to={to_account.name}, amount={amount}')
-                flash('Transfer completed successfully!', 'success')
-            else:
-                flash('Insufficient balance or invalid accounts!', 'danger')
-        else:
-            flash('Invalid transfer details!', 'danger')
-        
+        try:
+            from utils.money import from_minor, to_minor
+            from app.services.accounting import _apply_account_tx_effect
+            from_account_id = request.form.get('from_account', type=int)
+            to_account_id = request.form.get('to_account', type=int)
+            amount_minor = to_minor(request.form.get('amount', 0), field='Transfer amount')
+            if amount_minor <= 0:
+                raise ValueError('Transfer amount must be greater than zero.')
+            from_account = db.session.get(Account, from_account_id) if from_account_id else None
+            to_account = db.session.get(Account, to_account_id) if to_account_id else None
+            if not _is_account_active(from_account) or not _is_account_active(to_account):
+                raise ValueError('Select valid active source and destination accounts.')
+            if from_account.id == to_account.id:
+                raise ValueError('Source and destination accounts cannot be the same.')
+            available_minor = int(from_account.balance_minor) if from_account.balance_minor is not None else to_minor(from_account.balance or 0)
+            if available_minor < amount_minor:
+                raise ValueError('Insufficient balance in the source account.')
+            transaction = AccountTransaction(
+                from_account_id=from_account.id, to_account_id=to_account.id,
+                amount=float(from_minor(amount_minor)), amount_minor=amount_minor,
+                description=(request.form.get('description') or 'Account transfer').strip(),
+                note=(request.form.get('note') or '').strip(),
+                transaction_type='Transfer', created_by=getattr(current_user, 'username', None),
+                date_posted=pk_now(),
+            )
+            db.session.add(transaction)
+            db.session.flush()
+            _apply_account_tx_effect(transaction)
+            _audit_pending_account_transactions()
+            db.session.commit()
+            flash('Transfer completed successfully!', 'success')
+        except ValueError as exc:
+            db.session.rollback()
+            flash(str(exc), 'danger')
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception('Account transfer failed')
+            flash(f'Unable to record transfer: {exc}', 'danger')
         return redirect(url_for('accounts.transfers'))
     
-    accounts = _active_accounts().all()
-    return render_template('accounts/add_transfer.html', accounts=accounts)
+    accounts = _active_accounts().order_by(Account.name.asc(), Account.id.asc()).all()
+    return render_template(
+        'accounts/add_transfer.html', accounts=accounts,
+        account_options=[{'id': a.id, 'label': _account_option_label(a)} for a in accounts],
+        account_data={str(a.id): {'name': a.name, 'balance': _money_round(a.balance)} for a in accounts},
+    )
 
 

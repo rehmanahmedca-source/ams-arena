@@ -152,7 +152,7 @@ def _sync_payment_waive_off(payment):
             db.session.delete(row)
         return
 
-    client_obj = get_client_by_input(payment.client_name or '')
+    client_obj = db.session.get(Client, payment.client_id) if getattr(payment, 'client_id', None) else get_client_by_input(payment.client_name or '')
     bill_ref = (payment.manual_bill_no or payment.auto_bill_no or f"PAY-{payment.id}")
     reason = (payment.discount_reason or '').strip() or 'Payment waive-off (loss)'
     now_dt = pk_now()

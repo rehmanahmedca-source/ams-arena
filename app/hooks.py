@@ -1,6 +1,6 @@
 """Legacy request hooks. Bound in create_app via register_hooks()."""
 from __future__ import annotations
-import os, time, logging
+import os, time, logging, secrets
 from flask import request
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -108,7 +108,31 @@ def register_hooks(app):
 
     @app.before_request
     def _protect_against_csrf():
-        return None
+        """Session-bound CSRF protection for financial Accounts mutations."""
+        token = session.get('_csrf_token')
+        if not token:
+            token = secrets.token_urlsafe(32)
+            session['_csrf_token'] = token
+        if app.config.get('TESTING') or app.config.get('WTF_CSRF_ENABLED') is False:
+            return None
+        if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            return None
+        endpoint = request.endpoint or ''
+        if not (endpoint == 'accounts' or endpoint.startswith('accounts.')):
+            return None
+        supplied = request.form.get('_csrf_token') or request.headers.get('X-CSRF-Token')
+        if supplied and secrets.compare_digest(str(supplied), str(token)):
+            return None
+        logging.getLogger('security').warning('CSRF rejected: endpoint=%s ip=%s', endpoint, request.remote_addr)
+        return jsonify({'error': 'Invalid or expired form token. Reload the page and try again.'}), 400
+
+    @app.context_processor
+    def _inject_csrf_token():
+        token = session.get('_csrf_token')
+        if not token:
+            token = secrets.token_urlsafe(32)
+            session['_csrf_token'] = token
+        return {'csrf_token': token}
 
     @app.before_request
     def _http_lan_session_cookies():

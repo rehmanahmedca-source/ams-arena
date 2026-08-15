@@ -121,15 +121,15 @@ def _compute_client_financial_summary(client):
         func.lower(func.trim(Booking.client_name)) == client_name_norm,
         Booking.is_void == False
     ).scalar() or 0
+    payment_party_filter = or_(
+        Payment.client_id == client.id,
+        and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm),
+    )
     p_credit = db.session.query(func.sum(Payment.amount)).filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm,
-        Payment.is_void == False,
-        Payment.amount >= 0
+        payment_party_filter, Payment.is_void == False, Payment.amount >= 0
     ).scalar() or 0
     p_debit = db.session.query(func.sum(-Payment.amount)).filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm,
-        Payment.is_void == False,
-        Payment.amount < 0
+        payment_party_filter, Payment.is_void == False, Payment.amount < 0
     ).scalar() or 0
     ds_debit = db.session.query(func.sum(DirectSale.amount)).filter(
         func.lower(func.trim(DirectSale.client_name)) == client_name_norm,
@@ -426,7 +426,8 @@ def _client_balance_as_of(client_obj, cutoff_dt=None):
         Booking.is_void == False
     )
     payment_q = Payment.query.filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm,
+        or_(Payment.client_id == client_obj.id,
+            and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
         Payment.is_void == False
     )
     sale_q = DirectSale.query.filter(

@@ -24,7 +24,7 @@ class FbmCashDrawerCategory(db.Model):
 
 
 class Account(db.Model):
-    """Financial accounts for managing cash flow"""
+    """Financial accounts for managing cash flow."""
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     # Legacy/compat column: existing SQLite DBs may require this field (NOT NULL).
@@ -34,14 +34,24 @@ class Account(db.Model):
     source_category = db.Column(db.String(100), index=True)
     account_type = db.Column(db.String(50), nullable=False)  # company, supplier, client, personal, etc
     balance = db.Column(db.Float, default=0)
+    balance_minor = db.Column(db.BigInteger, nullable=True)  # authoritative paisa/cents
+    # Explicit opening baseline makes the ledger independently reproducible.
+    # Legacy rows are backfilled as current balance minus posted net movement.
+    opening_balance = db.Column(db.Float, nullable=True)
+    opening_balance_minor = db.Column(db.BigInteger, nullable=True)
+    opening_balance_date = db.Column(db.DateTime, nullable=True, index=True)
     # Bank details (if category == 'bank')
     bank_name = db.Column(db.String(100))
     account_holder_name = db.Column(db.String(100))
     account_number = db.Column(db.String(50))
     branch_code = db.Column(db.String(50))
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(db.Boolean, default=True, index=True)
+    revision = db.Column(db.Integer, default=1, nullable=True)
     created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
+    updated_at = db.Column(db.DateTime, default=pk_model_now, onupdate=pk_model_now, index=True)
+    updated_by = db.Column(db.String(80))
     note = db.Column(db.String(500))
+    __mapper_args__ = {'version_id_col': revision}
 
 
 class AccountCategory(db.Model):
@@ -54,16 +64,24 @@ class AccountCategory(db.Model):
 
 
 class AccountTransaction(db.Model):
-    """Transactions between accounts"""
+    """Immutable ledger movement between accounts (voided, never erased)."""
     id = db.Column(db.Integer, primary_key=True)
-    from_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True)
-    to_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True)
+    from_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True, index=True)
+    to_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True, index=True)
     amount = db.Column(db.Float, default=0)
+    amount_minor = db.Column(db.BigInteger, nullable=True)  # authoritative paisa/cents
     description = db.Column(db.String(200))
     date_posted = db.Column(db.DateTime, default=pk_model_now, index=True)
-    is_void = db.Column(db.Boolean, default=False)
+    is_void = db.Column(db.Boolean, default=False, index=True)
     note = db.Column(db.String(500))
-    transaction_type = db.Column(db.String(50))  # Transfer, Payment, Receipt, Expense
+    transaction_type = db.Column(db.String(50), index=True)  # Transfer, Payment, Receipt, Expense
+    source_type = db.Column(db.String(50), nullable=True, index=True)
+    source_id = db.Column(db.Integer, nullable=True, index=True)
+    reconciliation_id = db.Column(db.Integer, db.ForeignKey('account_reconciliation.id'), nullable=True, index=True)
+    created_by = db.Column(db.String(80))
+    voided_by = db.Column(db.String(80))
+    voided_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
 
     from_account = db.relationship('Account', foreign_keys=[from_account_id], backref='outgoing_transactions')
     to_account = db.relationship('Account', foreign_keys=[to_account_id], backref='incoming_transactions')
@@ -171,28 +189,52 @@ class CashFlowEntry(db.Model):
 
 
 class AccountReconciliation(db.Model):
-    """Per-account reconciliation: expected (ledger) vs actual (physical) balance.
+    """Immutable per-account closing snapshot and transparent adjustment.
 
-    Each reconcile creates an immutable snapshot row.  The balancing entry is
-    posted to AccountTransaction as an 'Adjustment' (transparent, auditable)
-    and the account balance is moved to the actual value, which then serves as
-    the next period's opening balance.
+    ``previous/final`` and period movement fields preserve the complete carry
+    chain: previous final -> opening -> period movement -> expected -> actual ->
+    adjustment -> final.  Existing legacy columns remain for compatibility.
     """
     __tablename__ = 'account_reconciliation'
     id = db.Column(db.Integer, primary_key=True)
     account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=False, index=True)
+    previous_reconciliation_id = db.Column(db.Integer, db.ForeignKey('account_reconciliation.id'), nullable=True, index=True)
+    adjustment_transaction_id = db.Column(db.Integer, nullable=True, index=True)
     reconciliation_date = db.Column(db.Date, nullable=False, index=True)
-    expected_balance = db.Column(db.Float, default=0)   # ledger/calculated balance
-    actual_balance = db.Column(db.Float, default=0)     # physically entered balance
+    period_start_at = db.Column(db.DateTime, nullable=True)
+    period_end_at = db.Column(db.DateTime, nullable=True)
+    previous_balance = db.Column(db.Float, default=0)
+    opening_balance = db.Column(db.Float, default=0)
+    transaction_in = db.Column(db.Float, default=0)
+    transaction_out = db.Column(db.Float, default=0)
+    transaction_net = db.Column(db.Float, default=0)
+    expected_balance = db.Column(db.Float, default=0)   # calculated closing before adjustment
+    actual_balance = db.Column(db.Float, default=0)     # physically entered closing
     difference = db.Column(db.Float, default=0)         # actual - expected
-    difference_type = db.Column(db.String(20), default='Matched')  # Matched | Loss | Excess
-    status = db.Column(db.String(20), default='Reconciled')
+    adjustment_amount = db.Column(db.Float, default=0)  # signed, same as difference
+    final_reconciled_balance = db.Column(db.Float, default=0)
+    previous_balance_minor = db.Column(db.BigInteger, nullable=True)
+    opening_balance_minor = db.Column(db.BigInteger, nullable=True)
+    transaction_in_minor = db.Column(db.BigInteger, nullable=True)
+    transaction_out_minor = db.Column(db.BigInteger, nullable=True)
+    transaction_net_minor = db.Column(db.BigInteger, nullable=True)
+    expected_balance_minor = db.Column(db.BigInteger, nullable=True)
+    actual_balance_minor = db.Column(db.BigInteger, nullable=True)
+    difference_minor = db.Column(db.BigInteger, nullable=True)
+    final_reconciled_balance_minor = db.Column(db.BigInteger, nullable=True)
+    difference_type = db.Column(db.String(20), default='Matched', index=True)  # Matched | Loss | Excess
+    status = db.Column(db.String(20), default='Reconciled', index=True)
     note = db.Column(db.String(500))
+    created_by_id = db.Column(db.Integer, nullable=True)
     created_by = db.Column(db.String(80))
+    created_ip = db.Column(db.String(80))
+    session_id = db.Column(db.String(80))
     created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
-    updated_at = db.Column(db.DateTime, default=pk_model_now, onupdate=pk_model_now, index=True)
+    # Kept for legacy schema compatibility; immutable records are never updated.
+    updated_at = db.Column(db.DateTime, default=pk_model_now, index=True)
 
     account = db.relationship('Account', foreign_keys=[account_id], backref='reconciliations')
+    previous_reconciliation = db.relationship('AccountReconciliation', remote_side=[id], foreign_keys=[previous_reconciliation_id])
 
 
 class CashFlowReconciliationAudit(db.Model):

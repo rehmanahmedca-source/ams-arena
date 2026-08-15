@@ -164,9 +164,10 @@ def _build_client_ledger_rows(client):
     bookings = Booking.query.filter(
         func.lower(func.trim(Booking.client_name)) == client_name_norm
     ).all()
-    payments = Payment.query.filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm
-    ).all()
+    payments = Payment.query.filter(or_(
+        Payment.client_id == client.id,
+        and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm),
+    )).all()
     direct_sales = DirectSale.query.filter(
         func.lower(func.trim(DirectSale.client_name)) == client_name_norm
     ).all()
@@ -843,7 +844,8 @@ def _client_history_receipts(client):
         records.append({'dt': _receipt_sort_dt(row.date_posted), 'id': row.id or 0, 'type': 'Booking', 'obj': row})
 
     for row in Payment.query.filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm,
+        or_(Payment.client_id == client.id,
+            and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
         Payment.is_void == False
     ).all():
         records.append({'dt': _receipt_sort_dt(row.date_posted), 'id': row.id or 0, 'type': 'Payment', 'obj': row})
@@ -904,7 +906,8 @@ def _client_history_summary(client, financial_history, material_history_grouped,
         DirectSale.is_void == False
     ).scalar() or 0
     total_payments = db.session.query(func.sum(Payment.amount)).filter(
-        func.lower(func.trim(Payment.client_name)) == client_name_norm,
+        or_(Payment.client_id == client.id,
+            and_(Payment.client_id.is_(None), func.lower(func.trim(Payment.client_name)) == client_name_norm)),
         Payment.is_void == False
     ).scalar() or 0
     total_booking_paid = db.session.query(func.sum(Booking.paid_amount)).filter(

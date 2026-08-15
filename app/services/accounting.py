@@ -55,6 +55,7 @@ from app.services.sales_core import (
 from app.services.time_money import (
     pk_now,
 )
+from utils.money import from_minor, to_minor
 
 
 # Rebind constants used as bare names
@@ -104,30 +105,49 @@ def _src_marker(kind, src_id, suffix=None):
     return base
 
 
+def _account_minor(account):
+    if account is None:
+        return 0
+    current = getattr(account, 'balance_minor', None)
+    return int(current) if current is not None else to_minor(account.balance or 0)
+
+
+def _tx_minor(tx):
+    current = getattr(tx, 'amount_minor', None)
+    return int(current) if current is not None else to_minor(tx.amount or 0)
+
+
+def _set_account_minor(account, minor):
+    account.balance_minor = int(minor)
+    account.balance = float(from_minor(minor))
+
+
 def _reverse_account_tx_effect(tx):
     if not tx or bool(getattr(tx, 'is_void', False)):
         return
+    amount_minor = _tx_minor(tx)
     if getattr(tx, 'to_account_id', None):
-        acc = Account.query.get(tx.to_account_id)
+        acc = db.session.get(Account, tx.to_account_id)
         if acc:
-            acc.balance = float(acc.balance or 0) - float(tx.amount or 0)
+            _set_account_minor(acc, _account_minor(acc) - amount_minor)
     if getattr(tx, 'from_account_id', None):
-        acc = Account.query.get(tx.from_account_id)
+        acc = db.session.get(Account, tx.from_account_id)
         if acc:
-            acc.balance = float(acc.balance or 0) + float(tx.amount or 0)
+            _set_account_minor(acc, _account_minor(acc) + amount_minor)
 
 
 def _apply_account_tx_effect(tx):
     if not tx or bool(getattr(tx, 'is_void', False)):
         return
+    amount_minor = _tx_minor(tx)
     if getattr(tx, 'to_account_id', None):
-        acc = Account.query.get(tx.to_account_id)
+        acc = db.session.get(Account, tx.to_account_id)
         if acc:
-            acc.balance = float(acc.balance or 0) + float(tx.amount or 0)
+            _set_account_minor(acc, _account_minor(acc) + amount_minor)
     if getattr(tx, 'from_account_id', None):
-        acc = Account.query.get(tx.from_account_id)
+        acc = db.session.get(Account, tx.from_account_id)
         if acc:
-            acc.balance = float(acc.balance or 0) - float(tx.amount or 0)
+            _set_account_minor(acc, _account_minor(acc) - amount_minor)
 
 
 def _void_account_tx(tx):
@@ -164,7 +184,9 @@ def _sync_linked_receipt_tx(kind, src_id, to_account_id, amount, date_posted, de
         return
 
     # If the existing tx doesn't match the new intent, void and recreate to keep balances correct.
-    if primary and (not primary.is_void) and (primary.to_account_id != to_account_id or float(primary.amount or 0) != float(amount or 0)):
+    if primary and (not primary.is_void) and (
+        primary.to_account_id != to_account_id or _tx_minor(primary) != to_minor(amount or 0)
+    ):
         _void_account_tx(primary)
         primary = None
 
@@ -175,10 +197,13 @@ def _sync_linked_receipt_tx(kind, src_id, to_account_id, amount, date_posted, de
         tx = AccountTransaction(
             from_account_id=None,
             to_account_id=to_account_id,
-            amount=float(amount or 0),
+            amount=float(from_minor(to_minor(amount or 0))),
+            amount_minor=to_minor(amount or 0),
             description=description,
             note=(note or '').strip(),
             transaction_type='Receipt',
+            source_type=kind,
+            source_id=src_id,
             date_posted=date_posted or pk_now()
         )
         db.session.add(tx)
@@ -186,6 +211,8 @@ def _sync_linked_receipt_tx(kind, src_id, to_account_id, amount, date_posted, de
         _apply_account_tx_effect(tx)
         return
 
+    primary.source_type = kind
+    primary.source_id = src_id
     primary.description = description
     primary.note = (note or '').strip()
     if date_posted:
@@ -209,7 +236,9 @@ def _sync_linked_supplier_payment_tx(kind, src_id, from_account_id, amount, date
             _void_account_tx(primary)
         return
 
-    if primary and (not primary.is_void) and (primary.from_account_id != from_account_id or float(primary.amount or 0) != float(amount or 0)):
+    if primary and (not primary.is_void) and (
+        primary.from_account_id != from_account_id or _tx_minor(primary) != to_minor(amount or 0)
+    ):
         _void_account_tx(primary)
         primary = None
 
@@ -220,10 +249,13 @@ def _sync_linked_supplier_payment_tx(kind, src_id, from_account_id, amount, date
         tx = AccountTransaction(
             from_account_id=from_account_id,
             to_account_id=None,
-            amount=float(amount or 0),
+            amount=float(from_minor(to_minor(amount or 0))),
+            amount_minor=to_minor(amount or 0),
             description=description,
             note=(note or '').strip(),
             transaction_type='Supplier Payment',
+            source_type=kind,
+            source_id=src_id,
             date_posted=date_posted or pk_now()
         )
         db.session.add(tx)
@@ -231,6 +263,63 @@ def _sync_linked_supplier_payment_tx(kind, src_id, from_account_id, amount, date
         _apply_account_tx_effect(tx)
         return
 
+    primary.source_type = kind
+    primary.source_id = src_id
+    primary.description = description
+    primary.note = (note or '').strip()
+    if date_posted:
+        primary.date_posted = date_posted
+
+
+def _sync_linked_client_refund_tx(src_id, from_account_id, amount, date_posted, description, note, is_void):
+    """Synchronise the cash/bank outflow for a negative client Payment row."""
+    canonical = _src_marker('Payment', src_id)
+    legacy = f"[SRC:ClientRefund:{int(src_id)}]"
+    existing = AccountTransaction.query.filter(
+        AccountTransaction.transaction_type.in_(['Refund', 'Payment']),
+        or_(AccountTransaction.note.ilike(f"%{canonical}%"),
+            AccountTransaction.note.ilike(f"%{legacy}%"))
+    ).order_by(AccountTransaction.id.desc()).all()
+    primary = existing[0] if existing else None
+    for extra in existing[1:]:
+        _void_account_tx(extra)
+
+    refund_minor = abs(to_minor(amount or 0))
+    desired_ok = (not bool(is_void)) and bool(from_account_id) and refund_minor > 0
+    if not desired_ok:
+        if primary:
+            _void_account_tx(primary)
+        return
+
+    if primary and not primary.is_void and (
+        primary.from_account_id != from_account_id or _tx_minor(primary) != refund_minor
+    ):
+        _void_account_tx(primary)
+        primary = None
+    if primary and primary.is_void:
+        primary = None
+
+    if not primary:
+        primary = AccountTransaction(
+            from_account_id=from_account_id,
+            to_account_id=None,
+            amount=float(from_minor(refund_minor)),
+            amount_minor=refund_minor,
+            description=description,
+            note=(note or '').strip(),
+            transaction_type='Refund',
+            source_type='Payment',
+            source_id=src_id,
+            date_posted=date_posted or pk_now(),
+        )
+        db.session.add(primary)
+        db.session.flush()
+        _apply_account_tx_effect(primary)
+        return
+
+    primary.transaction_type = 'Refund'
+    primary.source_type = 'Payment'
+    primary.source_id = src_id
     primary.description = description
     primary.note = (note or '').strip()
     if date_posted:
@@ -253,7 +342,7 @@ def _sync_linked_loss_tx(kind, src_id, amount, date_posted, description, note, i
             primary.is_void = True
         return
 
-    if primary and (not primary.is_void) and float(primary.amount or 0) != float(amount or 0):
+    if primary and (not primary.is_void) and _tx_minor(primary) != to_minor(amount or 0):
         primary.is_void = True
         primary = None
     if primary and primary.is_void:
@@ -263,10 +352,13 @@ def _sync_linked_loss_tx(kind, src_id, amount, date_posted, description, note, i
         tx = AccountTransaction(
             from_account_id=None,
             to_account_id=None,
-            amount=float(amount or 0),
+            amount=float(from_minor(to_minor(amount or 0))),
+            amount_minor=to_minor(amount or 0),
             description=description,
             note=(note or '').strip(),
             transaction_type='Loss',
+            source_type=kind,
+            source_id=src_id,
             date_posted=date_posted or pk_now()
         )
         db.session.add(tx)
@@ -285,15 +377,28 @@ def _sync_payment_accounting(payment):
     bill = (payment.manual_bill_no or payment.auto_bill_no or f"PAY-{payment.id}").strip()
     desc = f"Client payment received from {payment.client_name or 'Client'} ({bill})"
     note = " ".join([x for x in [(payment.note or '').strip(), marker] if x]).strip()
+    amount = float(getattr(payment, 'amount', 0) or 0)
+    payment_type = (getattr(payment, 'payment_type', None) or '').strip().lower()
+    is_non_cash_credit = payment_type == 'material return' or (payment.method or '').strip().lower() == 'material return'
     _sync_linked_receipt_tx(
         kind='Payment',
         src_id=payment.id,
         to_account_id=getattr(payment, 'payment_account_id', None),
-        amount=float(getattr(payment, 'amount', 0) or 0),
+        amount=(amount if amount > 0 and not is_non_cash_credit else 0),
         date_posted=getattr(payment, 'date_posted', None),
         description=desc,
         note=note,
         is_void=bool(getattr(payment, 'is_void', False))
+    )
+    refund_note = " ".join([x for x in [(payment.note or '').strip(), marker] if x]).strip()
+    _sync_linked_client_refund_tx(
+        src_id=payment.id,
+        from_account_id=getattr(payment, 'payment_account_id', None),
+        amount=(amount if amount < 0 else 0),
+        date_posted=getattr(payment, 'date_posted', None),
+        description=f"Client refund to {payment.client_name or 'Client'} ({bill})",
+        note=refund_note,
+        is_void=bool(getattr(payment, 'is_void', False)),
     )
     _sync_linked_loss_tx(
         kind='Payment',

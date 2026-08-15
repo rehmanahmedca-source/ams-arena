@@ -165,6 +165,9 @@ def _sync_grn_auto_supplier_payment(grn, old_supplier_id=None):
         db.session.flush()
     row.is_void = False
     row.supplier_id = grn.supplier_id
+    row.payment_type = 'Payment'
+    row.source_type = 'GRN'
+    row.source_id = grn.id
     row.amount = paid
     row.method = (grn.payment_type or row.method or 'Cash')
     row.date_posted = grn.date_posted or pk_now()

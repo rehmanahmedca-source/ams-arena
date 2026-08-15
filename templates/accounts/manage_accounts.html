@@ -118,12 +118,12 @@
             <a href="{{ url_for('accounts.reconciliations') }}" class="btn btn-outline-info">
                 <i class="bi bi-clock-history me-1"></i> Reconciliations
             </a>
-            <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#newCategoryModal">
+            {% if can_manage_master %}<button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#newCategoryModal">
                 <i class="bi bi-tag-fill me-1"></i> New Group
             </button>
             <a href="{{ url_for('accounts.add_account') }}" class="btn btn-primary">
                 <i class="bi bi-plus-lg me-1"></i> Add New Account
-            </a>
+            </a>{% endif %}
         </div>
     </div>
 
@@ -169,9 +169,9 @@
     <div class="card acc-section-card mb-4">
         <div class="card-header">
             <h5><i class="bi bi-tags-fill me-2 text-info"></i>Transaction Groups</h5>
-            <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#newCategoryModal">
+            {% if can_manage_master %}<button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#newCategoryModal">
                 <i class="bi bi-plus-lg me-1"></i> New Group
-            </button>
+            </button>{% endif %}
         </div>
         <div class="card-body">
             <p class="small text-muted mb-3">
@@ -198,9 +198,9 @@
     <div class="card acc-section-card">
         <div class="card-header">
             <h5><i class="bi bi-list-columns-reverse me-2 text-warning"></i>All Accounts</h5>
-            <a href="{{ url_for('accounts.add_account') }}" class="btn btn-sm btn-primary">
+            {% if can_manage_master %}<a href="{{ url_for('accounts.add_account') }}" class="btn btn-sm btn-primary">
                 <i class="bi bi-plus-lg me-1"></i> Add Account
-            </a>
+            </a>{% endif %}
         </div>
         <div class="filter-bar">
             <div class="input-group input-group-sm" style="max-width: 280px;">
@@ -218,6 +218,11 @@
                 <option value="{{ category.name }}">{{ category.name }}</option>
                 {% endfor %}
             </select>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Account status">
+                <a class="btn {% if show_mode=='active' %}btn-success{% else %}btn-outline-success{% endif %}" href="{{ url_for('accounts.manage_accounts', show='active') }}">Active</a>
+                <a class="btn {% if show_mode=='archived' %}btn-danger{% else %}btn-outline-danger{% endif %}" href="{{ url_for('accounts.manage_accounts', show='archived') }}">Archived</a>
+                <a class="btn {% if show_mode=='all' %}btn-info{% else %}btn-outline-info{% endif %}" href="{{ url_for('accounts.manage_accounts', show='all') }}">All</a>
+            </div>
             <span class="ms-auto small text-muted" id="acc-count">{{ accounts|length }} accounts</span>
         </div>
         <div class="card-body p-0">
@@ -277,11 +282,11 @@
                                    class="btn btn-sm btn-outline-info" title="View Ledger">
                                     <i class="bi bi-journal-text"></i>
                                 </a>
-                                <a href="{{ url_for('accounts.reconcile_account', account_id=account.id) }}"
+                                {% if account.is_active %}<a href="{{ url_for('accounts.reconcile_account', account_id=account.id) }}"
                                    class="btn btn-sm btn-outline-success" title="Reconcile">
                                     <i class="bi bi-check2-square"></i>
-                                </a>
-                                <button class="btn btn-sm btn-outline-warning" title="Edit" onclick="editAccount({{ account.id }})">
+                                </a>{% endif %}
+                                {% if can_manage_master %}<button class="btn btn-sm btn-outline-warning" title="Edit" onclick="editAccount({{ account.id }})">
                                     <i class="bi bi-pencil-square"></i>
                                 </button>
                                 <form method="POST" action="{{ url_for('accounts.toggle_account', account_id=account.id) }}" style="display:inline" onsubmit="return confirm('{% if account.is_active %}Deactivate{% else %}Reactivate{% endif %} this account?');">
@@ -293,7 +298,7 @@
                                     <button type="submit" class="btn btn-sm btn-outline-dark" title="Delete">
                                         <i class="bi bi-trash"></i>
                                     </button>
-                                </form>
+                                </form>{% endif %}
                             </td>
                         </tr>
                         {% else %}

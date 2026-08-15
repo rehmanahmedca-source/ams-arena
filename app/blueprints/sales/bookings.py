@@ -82,7 +82,7 @@ def bookings_page():
     )
     bookings = bookings_pagination.items
     clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
-    materials = Material.query.order_by(Material.name.asc()).all()
+    materials = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     accounts = Account.query.filter(func.coalesce(Account.is_active, True) == True).order_by(Account.name.asc()).all()
     next_auto = peek_next_bill_no(AUTO_BILL_NAMESPACES['BOOKING'])
     return render_template('bookings.html',

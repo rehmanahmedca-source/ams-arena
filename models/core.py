@@ -26,6 +26,30 @@ class AuditLog(db.Model):
     timestamp = db.Column(db.DateTime, default=pk_model_now, index=True)
 
 
+class AccountingAuditLog(db.Model):
+    """Structured, append-only audit event committed with a financial mutation."""
+    __tablename__ = 'accounting_audit_log'
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    module = db.Column(db.String(50), nullable=False, index=True)
+    action = db.Column(db.String(30), nullable=False, index=True)
+    entity_type = db.Column(db.String(50), nullable=False, index=True)
+    entity_id = db.Column(db.Integer, nullable=True, index=True)
+    user_id = db.Column(db.Integer, nullable=True, index=True)
+    username = db.Column(db.String(80), index=True)
+    ip_address = db.Column(db.String(80))
+    session_id = db.Column(db.String(80))
+    before_json = db.Column(db.Text)
+    after_json = db.Column(db.Text)
+    amount_before_minor = db.Column(db.BigInteger, nullable=True)
+    amount_after_minor = db.Column(db.BigInteger, nullable=True)
+    account_before_id = db.Column(db.Integer, nullable=True)
+    account_after_id = db.Column(db.Integer, nullable=True)
+    party_before_id = db.Column(db.Integer, nullable=True)
+    party_after_id = db.Column(db.Integer, nullable=True)
+    reason = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=pk_model_now, index=True, nullable=False)
+
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), nullable=False)

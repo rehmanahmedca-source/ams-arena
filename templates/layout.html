@@ -197,7 +197,7 @@
             color: #1f2937 !important;
             border-bottom: 1px solid #f7c97a;
         }
-        .combobox-item:hover { background: #dcfce7; }
+        .combobox-item:hover, .combobox-item.active { background: #dcfce7; color:#052e16; outline:none; }
         .combobox-item:last-child { border-bottom: none; }
 
         /* Mobile Adjustments */
@@ -1319,9 +1319,11 @@ function toggleNavGroup(groupId, btn) {
         const isOpen = list.style.display === 'block';
         document.querySelectorAll('.combobox-list').forEach(l => l.style.display = 'none');
         list.style.display = isOpen ? 'none' : 'block';
+        const input = document.getElementById(inputId);
+        if (input) input.setAttribute('aria-expanded', list.style.display === 'block' ? 'true' : 'false');
         if (list.style.display === 'block') {
             positionCombobox(inputId, listId);
-            document.getElementById(inputId).focus();
+            input.focus();
         }
     }
 
@@ -1331,6 +1333,8 @@ function toggleNavGroup(groupId, btn) {
         bindComboboxAnchor(inputId, listId);
         document.querySelectorAll('.combobox-list').forEach(l => l.style.display = 'none');
         list.style.display = 'block';
+        const input = document.getElementById(inputId);
+        if (input) input.setAttribute('aria-expanded', 'true');
         positionCombobox(inputId, listId);
     }
 
@@ -1349,10 +1353,15 @@ function toggleNavGroup(groupId, btn) {
         const filter = input.value.toLowerCase();
         const items = list.getElementsByClassName('combobox-item');
         list.style.display = 'block';
+        input.setAttribute('aria-expanded', 'true');
+        input.removeAttribute('aria-activedescendant');
+        list.dataset.activeIndex = '-1';
         positionCombobox(inputId, listId);
         for (let i = 0; i < items.length; i++) {
             const text = items[i].innerText.toLowerCase();
             items[i].style.display = text.includes(filter) ? "" : "none";
+            items[i].classList.remove('active');
+            items[i].setAttribute('aria-selected', 'false');
         }
     }
 
@@ -1370,6 +1379,7 @@ function toggleNavGroup(groupId, btn) {
             hid.dispatchEvent(new Event('change', { bubbles: true }));
         }
         if (listEl) listEl.style.display = 'none';
+        if (input) { input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); }
         if (displayId && document.getElementById(displayId)) {
             document.getElementById(displayId).innerText = displayName ? ("Name: " + displayName) : '';
         }
@@ -1409,6 +1419,47 @@ function toggleNavGroup(groupId, btn) {
         if (!el) return;
         const ids = comboIdsFromEl(el);
         if (ids) filterCombobox(ids.inputId, ids.listId, ids.displayId);
+    });
+    document.addEventListener('keydown', function (e) {
+        const input = e.target.closest('input[data-combo-list],textarea[data-combo-list]');
+        if (!input) return;
+        const ids = comboIdsFromEl(input);
+        if (!ids) return;
+        const list = document.getElementById(ids.listId);
+        if (!list) return;
+        if (e.key === 'Escape') {
+            list.style.display = 'none';
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+            e.preventDefault();
+            return;
+        }
+        if (e.key === 'Tab') {
+            list.style.display = 'none';
+            input.setAttribute('aria-expanded', 'false');
+            return;
+        }
+        const visible = Array.from(list.querySelectorAll('.combobox-item')).filter(function (item) {
+            return item.style.display !== 'none';
+        });
+        if (!visible.length) return;
+        let idx = Number(list.dataset.activeIndex || -1);
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (list.style.display !== 'block') showCombobox(ids.inputId, ids.listId);
+            idx = e.key === 'ArrowDown' ? Math.min(idx + 1, visible.length - 1) : Math.max(idx - 1, 0);
+            visible.forEach(function (item) { item.classList.remove('active'); item.setAttribute('aria-selected', 'false'); });
+            const active = visible[idx];
+            active.classList.add('active');
+            active.setAttribute('aria-selected', 'true');
+            active.scrollIntoView({block: 'nearest'});
+            list.dataset.activeIndex = String(idx);
+            if (active.id) input.setAttribute('aria-activedescendant', active.id);
+            e.preventDefault();
+        } else if (e.key === 'Enter' && list.style.display === 'block') {
+            const active = visible[Math.max(0, idx)];
+            if (active) active.click();
+            e.preventDefault();
+        }
     });
     document.addEventListener('click', function (e) {
         const btn = e.target.closest('[data-combo-toggle]');
@@ -1483,6 +1534,55 @@ function toggleNavGroup(groupId, btn) {
         document.querySelectorAll('.combobox-list').forEach(l => {
             if (l.style.display === 'block') l.style.display = 'none';
         });
+    });
+
+    // Attach the session-bound CSRF token to every mutating form. Keeping this
+    // central prevents individual Accounts partials/modals from drifting.
+    document.addEventListener('DOMContentLoaded', function () {
+        const csrfToken = {{ (csrf_token or '')|tojson }};
+        if (!csrfToken) return;
+        document.querySelectorAll('form').forEach(function (form) {
+            const method = (form.getAttribute('method') || 'GET').toUpperCase();
+            if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
+            if (form.querySelector('input[name="_csrf_token"]')) return;
+            const input = document.createElement('input');
+            input.type = 'hidden'; input.name = '_csrf_token'; input.value = csrfToken;
+            form.appendChild(input);
+        });
+    });
+
+    // Reusable searchable enhancement for native selects whose options are
+    // dynamically rebuilt by existing transaction scripts. It preserves the
+    // original <select> name/value/events while adding keyboard-friendly search.
+    function enhanceSearchableSelect(select) {
+        if (!select || select.dataset.searchEnhanced === '1') return;
+        select.dataset.searchEnhanced = '1';
+        const search = document.createElement('input');
+        search.type = 'search';
+        search.className = 'form-control form-control-sm mb-1 acc-select-search';
+        search.placeholder = select.dataset.searchPlaceholder || 'Search options…';
+        search.setAttribute('aria-label', search.placeholder);
+        select.parentNode.insertBefore(search, select);
+        const apply = function () {
+            const query = search.value.trim().toLowerCase();
+            let shown = 0;
+            Array.from(select.options).forEach(function (option, index) {
+                const visible = index === 0 || !query || option.text.toLowerCase().includes(query) || String(option.value).toLowerCase().includes(query);
+                option.hidden = !visible;
+                if (visible && index > 0) shown += 1;
+            });
+            select.dataset.visibleMatches = String(shown);
+        };
+        search.addEventListener('input', apply);
+        search.addEventListener('keydown', function (event) {
+            if (event.key === 'ArrowDown') { select.focus(); event.preventDefault(); }
+            if (event.key === 'Escape') { search.value = ''; apply(); }
+        });
+        new MutationObserver(apply).observe(select, {childList: true, subtree: true});
+        apply();
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('select.acc-searchable-select').forEach(enhanceSearchableSelect);
     });
 
     // Date Picker initialization

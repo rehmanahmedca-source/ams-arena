@@ -38,21 +38,32 @@ class Supplier(db.Model):
 
 class SupplierPayment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False, index=True)
     amount = db.Column(db.Float, default=0)
+    amount_minor = db.Column(db.BigInteger, nullable=True)  # authoritative paisa/cents
     method = db.Column(db.String(50))
+    payment_type = db.Column(db.String(30), default='Payment', index=True)
+    source_type = db.Column(db.String(50), nullable=True, index=True)
+    source_id = db.Column(db.Integer, nullable=True, index=True)
     date_posted = db.Column(db.DateTime, default=pk_model_now, index=True)
     note = db.Column(db.String(500))
-    is_void = db.Column(db.Boolean, default=False)
+    is_void = db.Column(db.Boolean, default=False, index=True)
     bank_name = db.Column(db.String(100))
     account_name = db.Column(db.String(100))
     account_no = db.Column(db.String(50))
     payment_account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=True)
     manual_bill_no = db.Column(db.String(50))
     auto_bill_no = db.Column(db.String(50))
-    
+    idempotency_key = db.Column(db.String(64), nullable=True, unique=True, index=True)
+    revision = db.Column(db.Integer, default=1, nullable=True)
+    created_by = db.Column(db.String(80))
+    updated_by = db.Column(db.String(80))
+    created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
+    updated_at = db.Column(db.DateTime, default=pk_model_now, onupdate=pk_model_now, index=True)
+
     supplier = db.relationship('Supplier', backref='payments')
     payment_account = db.relationship('Account', foreign_keys=[payment_account_id], backref='supplier_payments')
+    __mapper_args__ = {'version_id_col': revision}
 
 
 class DeliveryPerson(db.Model):
