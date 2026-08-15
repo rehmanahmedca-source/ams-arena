@@ -1,0 +1,57 @@
+{% extends "layout.html" %}
+
+{% block title %}Account Reconciliations{% endblock %}
+
+{% block content %}
+{% include 'accounts/_acc_styles.html' %}
+<style>
+.acc-page-header{ background: linear-gradient(135deg, rgba(99,102,241,0.18), rgba(16,185,129,0.18)); }
+</style>
+
+<div class="container-fluid">
+    <div class="acc-page-header">
+        <div>
+            <h2><i class="bi bi-clock-history me-2 text-success"></i>Account Reconciliations</h2>
+            <div class="subtitle">Immutable audit history of account reconciliations ({{ total_count }} records).</div>
+        </div>
+        <div class="acc-toolbar">
+            <a href="{{ url_for('accounts.manage_accounts') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Accounts</a>
+        </div>
+    </div>
+
+    <div class="acc-section-card">
+        <div class="table-responsive">
+            <table class="table acc-table align-middle mb-0">
+                <thead><tr>
+                    <th>Date</th><th>Account</th><th class="text-end">Expected</th><th class="text-end">Actual</th>
+                    <th class="text-end">Difference</th><th>Type</th><th>Status</th><th>By</th><th>Note</th>
+                </tr></thead>
+                <tbody>
+                {% for r in recs.items %}
+                <tr>
+                    <td class="small">{{ r.reconciliation_date.strftime('%Y-%m-%d') }}</td>
+                    <td><a href="{{ url_for('accounts.account_ledger', account_id=r.account_id) }}" class="text-decoration-none"><strong>{{ r.account.name if r.account else ('Account #' ~ r.account_id) }}</strong></a></td>
+                    <td class="text-end">Rs. {{ "%.2f"|format(r.expected_balance) }}</td>
+                    <td class="text-end">Rs. {{ "%.2f"|format(r.actual_balance) }}</td>
+                    <td class="text-end fw-bold {% if r.difference < 0 %}text-danger{% elif r.difference > 0 %}text-warning{% else %}text-success{% endif %}">Rs. {{ "%+.2f"|format(r.difference) }}</td>
+                    <td><span class="tiny-pill {% if r.difference_type == 'Matched' %}badge-soft-emerald{% elif r.difference_type == 'Loss' %}badge-soft-rose{% else %}badge-soft-amber{% endif %}">{{ r.difference_type }}</span></td>
+                    <td><span class="tiny-pill badge-soft-info">{{ r.status }}</span></td>
+                    <td class="small">{{ r.created_by or '—' }}</td>
+                    <td class="small text-muted">{{ r.note or '' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9" class="empty-state"><i class="bi bi-inbox"></i><div class="mt-2">No reconciliations recorded.</div></td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if recs.has_prev or recs.has_next %}
+        <nav class="p-3"><ul class="pagination justify-content-center mb-0">
+            <li class="page-item {% if not recs.has_prev %}disabled{% endif %}"><a class="page-link" href="{{ url_for('accounts.reconciliations', page=recs.prev_num) }}">Previous</a></li>
+            <li class="page-item disabled"><span class="page-link">{{ recs.page }} / {{ recs.pages }}</span></li>
+            <li class="page-item {% if not recs.has_next %}disabled{% endif %}"><a class="page-link" href="{{ url_for('accounts.reconciliations', page=recs.next_num) }}">Next</a></li>
+        </ul></nav>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

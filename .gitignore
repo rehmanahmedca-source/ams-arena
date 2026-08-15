@@ -10,6 +10,8 @@ __pycache__/
 # Database & runtime artifacts
 instance/ahmed_cement.db
 instance/ahmed_cement.db-journal
+instance/ahmed_cement.db-wal
+instance/ahmed_cement.db-shm
 instance/secret_key
 instance/import_uploads/
 instance/import_reports/

@@ -326,7 +326,7 @@ def edit_account(account_id):
 @accounts_bp.route('/<int:account_id>/toggle', methods=['POST'])
 @login_required
 def toggle_account(account_id):
-    """Soft-deactivate / reactivate an account."""
+    """Soft-deactivate / reactivate an account (never corrupts history)."""
     a = Account.query.get_or_404(account_id)
     a.is_active = not bool(a.is_active)
     db.session.commit()
@@ -335,3 +335,105 @@ def toggle_account(account_id):
     return redirect(url_for('accounts.manage_accounts'))
 
 
+@accounts_bp.route('/<int:account_id>/delete', methods=['POST'])
+@login_required
+def delete_account(account_id):
+    """Delete an account safely.
+
+    Accounts that are referenced by any transaction/payment (voided or not) are
+    archived (soft-deleted) instead of hard-deleted so historical accounting
+    integrity is preserved.  Only unreferenced accounts are hard-deleted.
+    """
+    a = Account.query.get_or_404(account_id)
+    has_tx = AccountTransaction.query.filter(
+        or_(AccountTransaction.from_account_id == a.id, AccountTransaction.to_account_id == a.id)
+    ).count() > 0
+    has_client_payments = Payment.query.filter_by(payment_account_id=a.id).count() > 0
+    has_supplier_payments = SupplierPayment.query.filter_by(payment_account_id=a.id).count() > 0
+
+    if has_tx or has_client_payments or has_supplier_payments:
+        a.is_active = False
+        db.session.commit()
+        audit_log(current_user, 'account.delete.archive', f'id={a.id}, name={a.name}, reason=has_historical_transactions')
+        flash('Account has historical transactions and was archived (deactivated) to preserve accounting history.', 'warning')
+    else:
+        name = a.name
+        db.session.delete(a)
+        db.session.commit()
+        audit_log(current_user, 'account.delete', f'id={account_id}, name={name}')
+        flash('Account deleted.', 'success')
+    return redirect(url_for('accounts.manage_accounts'))
+
+
+
+
+@accounts_bp.route('/reconciliations')
+@login_required
+def reconciliations():
+    """List of per-account reconciliation records (immutable audit history)."""
+    page = request.args.get('page', 1, type=int)
+    per_page = 50
+    from models import AccountReconciliation
+
+    q = AccountReconciliation.query
+    total_count = q.count()
+    recs = q.order_by(
+        AccountReconciliation.reconciliation_date.desc(),
+        AccountReconciliation.id.desc()
+    ).paginate(page=page, per_page=per_page)
+    return render_template('accounts/reconciliations.html', recs=recs, total_count=total_count)
+
+
+@accounts_bp.route('/<int:account_id>/reconcile', methods=['GET', 'POST'])
+@login_required
+def reconcile_account(account_id):
+    """Reconcile one account: compare ledger (expected) vs physical (actual)."""
+    from app.services.payments_crud import ledger_balance, reconcile_account as do_reconcile
+    from models import AccountReconciliation
+
+    account = Account.query.get_or_404(account_id)
+    expected = ledger_balance(account.id)
+    recent = AccountReconciliation.query.filter_by(account_id=account.id).order_by(
+        AccountReconciliation.reconciliation_date.desc(), AccountReconciliation.id.desc()
+    ).limit(5).all()
+
+    if request.method == 'POST':
+        try:
+            actual = request.form.get('actual_balance', '').strip()
+            if actual == '':
+                raise ValueError('Actual balance is required.')
+            note = request.form.get('note', '')
+            date_raw = (request.form.get('reconciliation_date') or '').strip()
+            if date_raw:
+                try:
+                    rec_date = datetime.strptime(date_raw, '%Y-%m-%d').date()
+                except ValueError:
+                    raise ValueError('Invalid reconciliation date.')
+            else:
+                rec_date = pk_today()
+            rec = do_reconcile(
+                account_id=account.id,
+                actual_balance=actual,
+                reconciliation_date=rec_date,
+                note=note,
+                actor=current_user,
+            )
+            db.session.commit()
+            flash(
+                f'Account reconciled as {rec.difference_type}. '
+                f'Expected Rs. {rec.expected_balance:,.2f}, Actual Rs. {rec.actual_balance:,.2f}, '
+                f'Difference Rs. {rec.difference:,.2f}.',
+                'success' if rec.difference_type == 'Matched' else 'warning'
+            )
+            return redirect(url_for('accounts.account_ledger', account_id=account.id))
+        except ValueError as exc:
+            db.session.rollback()
+            flash(str(exc), 'danger')
+        except Exception as exc:
+            db.session.rollback()
+            logger.exception('Account reconciliation failed')
+            flash(f'Unable to reconcile account: {exc}', 'danger')
+
+    return render_template('accounts/reconcile_account.html', account=account,
+                           expected=expected, recent=recent,
+                           today=pk_today().strftime('%Y-%m-%d'))

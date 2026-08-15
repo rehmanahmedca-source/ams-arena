@@ -170,6 +170,31 @@ class CashFlowEntry(db.Model):
     party = db.relationship('CashFlowParty', foreign_keys=[party_id])
 
 
+class AccountReconciliation(db.Model):
+    """Per-account reconciliation: expected (ledger) vs actual (physical) balance.
+
+    Each reconcile creates an immutable snapshot row.  The balancing entry is
+    posted to AccountTransaction as an 'Adjustment' (transparent, auditable)
+    and the account balance is moved to the actual value, which then serves as
+    the next period's opening balance.
+    """
+    __tablename__ = 'account_reconciliation'
+    id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(db.Integer, db.ForeignKey('account.id'), nullable=False, index=True)
+    reconciliation_date = db.Column(db.Date, nullable=False, index=True)
+    expected_balance = db.Column(db.Float, default=0)   # ledger/calculated balance
+    actual_balance = db.Column(db.Float, default=0)     # physically entered balance
+    difference = db.Column(db.Float, default=0)         # actual - expected
+    difference_type = db.Column(db.String(20), default='Matched')  # Matched | Loss | Excess
+    status = db.Column(db.String(20), default='Reconciled')
+    note = db.Column(db.String(500))
+    created_by = db.Column(db.String(80))
+    created_at = db.Column(db.DateTime, default=pk_model_now, index=True)
+    updated_at = db.Column(db.DateTime, default=pk_model_now, onupdate=pk_model_now, index=True)
+
+    account = db.relationship('Account', foreign_keys=[account_id], backref='reconciliations')
+
+
 class CashFlowReconciliationAudit(db.Model):
     """Audit trail for all physical cash reconciliation changes."""
     __tablename__ = 'cash_flow_reconciliation_audit'

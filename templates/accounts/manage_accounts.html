@@ -115,6 +115,9 @@
             <a href="{{ url_for('accounts.dashboard') }}" class="btn btn-outline-secondary">
                 <i class="bi bi-arrow-left me-1"></i> Dashboard
             </a>
+            <a href="{{ url_for('accounts.reconciliations') }}" class="btn btn-outline-info">
+                <i class="bi bi-clock-history me-1"></i> Reconciliations
+            </a>
             <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#newCategoryModal">
                 <i class="bi bi-tag-fill me-1"></i> New Group
             </button>
@@ -269,10 +272,14 @@
                                 {% endif %}
                             </td>
                             <td class="small text-muted">{{ account.created_at.strftime('%Y-%m-%d') }}</td>
-                            <td class="text-end">
+                            <td class="text-end text-nowrap">
                                 <a href="{{ url_for('accounts.account_ledger', account_id=account.id) }}"
                                    class="btn btn-sm btn-outline-info" title="View Ledger">
                                     <i class="bi bi-journal-text"></i>
+                                </a>
+                                <a href="{{ url_for('accounts.reconcile_account', account_id=account.id) }}"
+                                   class="btn btn-sm btn-outline-success" title="Reconcile">
+                                    <i class="bi bi-check2-square"></i>
                                 </a>
                                 <button class="btn btn-sm btn-outline-warning" title="Edit" onclick="editAccount({{ account.id }})">
                                     <i class="bi bi-pencil-square"></i>
@@ -280,6 +287,11 @@
                                 <form method="POST" action="{{ url_for('accounts.toggle_account', account_id=account.id) }}" style="display:inline" onsubmit="return confirm('{% if account.is_active %}Deactivate{% else %}Reactivate{% endif %} this account?');">
                                     <button type="submit" class="btn btn-sm {% if account.is_active %}btn-outline-danger{% else %}btn-outline-success{% endif %}" title="{% if account.is_active %}Deactivate{% else %}Reactivate{% endif %}">
                                         <i class="bi {% if account.is_active %}bi-power{% else %}bi-arrow-clockwise{% endif %}"></i>
+                                    </button>
+                                </form>
+                                <form method="POST" action="{{ url_for('accounts.delete_account', account_id=account.id) }}" style="display:inline" onsubmit="return confirm('Delete this account? If it has historical transactions it will be archived instead to preserve accounting history.');">
+                                    <button type="submit" class="btn btn-sm btn-outline-dark" title="Delete">
+                                        <i class="bi bi-trash"></i>
                                     </button>
                                 </form>
                             </td>

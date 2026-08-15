@@ -33,7 +33,10 @@ def client_payments():
     total_amount = q.with_entities(func.coalesce(func.sum(Payment.amount), 0)).scalar() or 0
     total_count = q.count()
     payments = q.order_by(Payment.date_posted.desc()).paginate(page=page, per_page=per_page)
-    accounts = Account.query.filter(func.coalesce(Account.is_active, True) == True).order_by(Account.name.asc()).all()
+    accounts = _active_accounts().order_by(Account.name.asc()).all()
+    clients = _active_clients()
+    client_options = [{'code': c.code, 'name': c.name} for c in clients]
+    account_options = [{'id': a.id, 'label': _account_option_label(a)} for a in accounts]
     payments_readonly = not (current_user.role in ('admin', 'root') or getattr(current_user, 'can_manage_payments', False))
     can_delete_payments = current_user.role in ('admin', 'root')
 
@@ -44,7 +47,8 @@ def client_payments():
                            total_amount=total_amount, total_count=total_count,
                            payments_readonly=payments_readonly,
                            can_delete_payments=can_delete_payments,
-                           accounts=accounts)
+                           accounts=accounts, clients=clients,
+                           client_options=client_options, account_options=account_options)
 
 
 @accounts_bp.route('/payments/suppliers')
@@ -55,27 +59,43 @@ def supplier_payments():
     per_page = 50
     search = (request.args.get('q') or '').strip()
     method_f = (request.args.get('method') or '').strip()
+    show_mode = (request.args.get('show') or 'active').strip().lower()
+    if show_mode not in ['active', 'voided', 'all']:
+        show_mode = 'active'
     date_from, date_to_excl = _parse_date_range()
 
-    q = SupplierPayment.query.filter(
-        SupplierPayment.is_void == False,
+    q = SupplierPayment.query
+    if show_mode == 'active':
+        q = q.filter(SupplierPayment.is_void == False)
+    elif show_mode == 'voided':
+        q = q.filter(SupplierPayment.is_void == True)
+    q = q.filter(
         SupplierPayment.date_posted >= date_from,
         SupplierPayment.date_posted < date_to_excl
     )
     if search:
         like = f'%{search}%'
-        q = q.join(Supplier).filter(or_(Supplier.name.ilike(like), SupplierPayment.note.ilike(like), SupplierPayment.account_name.ilike(like)))
+        q = q.outerjoin(Supplier).filter(or_(Supplier.name.ilike(like), SupplierPayment.note.ilike(like), SupplierPayment.account_name.ilike(like)))
     if method_f:
         q = q.filter(func.lower(SupplierPayment.method) == method_f.lower())
 
     total_amount = q.with_entities(func.coalesce(func.sum(SupplierPayment.amount), 0)).scalar() or 0
     total_count = q.count()
     payments = q.order_by(SupplierPayment.date_posted.desc()).paginate(page=page, per_page=per_page)
+    suppliers = _active_suppliers()
+    accounts = _active_accounts().order_by(Account.name.asc()).all()
+    supplier_options = [{'id': s.id, 'name': s.name} for s in suppliers]
+    account_options = [{'id': a.id, 'label': _account_option_label(a)} for a in accounts]
+    payments_readonly = not (current_user.role in ('admin', 'root') or getattr(current_user, 'can_manage_payments', False))
 
     return render_template('accounts/supplier_payments.html', payments=payments,
                            date_from=date_from, date_to=date_to_excl - timedelta(days=1),
                            search=search, method_f=method_f,
-                           total_amount=total_amount, total_count=total_count)
+                           show_mode=show_mode,
+                           total_amount=total_amount, total_count=total_count,
+                           suppliers=suppliers, accounts=accounts,
+                           supplier_options=supplier_options, account_options=account_options,
+                           payments_readonly=payments_readonly)
 
 
 @accounts_bp.route('/payments/clients/void/<int:id>', methods=['POST'])
@@ -85,22 +105,21 @@ def client_payment_void(id):
         flash('Permission denied', 'danger')
         return redirect(request.referrer or url_for('accounts.client_payments'))
 
-    from app.services.void_rebuild import _set_payment_void_state, rebuild_pending_bills
-    from app.services.lookups import get_client_by_input
-
     payment = Payment.query.get_or_404(id)
-    if not payment.is_void:
-        if _set_payment_void_state(payment, True):
-            client = get_client_by_input(payment.client_name or '')
-            if client:
-                rebuild_pending_bills(client_id=client.id)
-            audit_log(current_user, 'transaction.delete.Payment', f'id={id}')
+    try:
+        from app.services.payments_crud import delete_client_payment
+        if delete_client_payment(payment, actor=current_user):
             db.session.commit()
-            flash('Payment deleted successfully.', 'success')
+            flash('Payment deleted. Balances reversed and recalculated.', 'success')
         else:
-            flash('Payment could not be deleted.', 'warning')
-    else:
-        flash('Payment already deleted.', 'warning')
+            flash('Payment already deleted.', 'warning')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Client payment delete failed')
+        flash(f'Unable to delete payment: {exc}', 'danger')
 
     return redirect(request.referrer or url_for('accounts.client_payments'))
 
@@ -112,22 +131,21 @@ def client_payment_restore(id):
         flash('Permission denied', 'danger')
         return redirect(request.referrer or url_for('accounts.client_payments'))
 
-    from app.services.void_rebuild import _set_payment_void_state, rebuild_pending_bills
-    from app.services.lookups import get_client_by_input
-
     payment = Payment.query.get_or_404(id)
-    if payment.is_void:
-        if _set_payment_void_state(payment, False):
-            client = get_client_by_input(payment.client_name or '')
-            if client:
-                rebuild_pending_bills(client_id=client.id)
-            audit_log(current_user, 'transaction.unvoid.Payment', f'id={id}')
+    try:
+        from app.services.payments_crud import restore_client_payment
+        if restore_client_payment(payment, actor=current_user):
             db.session.commit()
-            flash('Payment restored successfully.', 'success')
+            flash('Payment restored. Balances re-applied.', 'success')
         else:
-            flash('Payment could not be restored.', 'warning')
-    else:
-        flash('Payment is already active.', 'warning')
+            flash('Payment is already active.', 'warning')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Client payment restore failed')
+        flash(f'Unable to restore payment: {exc}', 'danger')
 
     return redirect(request.referrer or url_for('accounts.client_payments'))
 
@@ -288,3 +306,187 @@ def receipts():
                            date_from=date_from, date_to=date_to_excl - timedelta(days=1))
 
 
+
+
+def _payments_permission_ok():
+    return current_user.role in ('admin', 'root') or getattr(current_user, 'can_manage_payments', False)
+
+
+@accounts_bp.route('/payments/clients/save', methods=['POST'])
+@login_required
+def client_payment_save():
+    """Create or update a client payment (single shared form for Create + Edit)."""
+    if not _payments_permission_ok():
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.client_payments'))
+    show_mode = (request.form.get('show') or 'active').strip().lower()
+    payment_id = request.form.get('payment_id', type=int)
+    try:
+        from app.services.payments_crud import save_client_payment
+        payment, created = save_client_payment(
+            payment_id=payment_id,
+            client_name=request.form.get('client_name', ''),
+            client_code=request.form.get('client_code', ''),
+            amount=request.form.get('amount', 0),
+            discount=request.form.get('discount', 0),
+            discount_reason=request.form.get('discount_reason', ''),
+            method=request.form.get('method', 'Cash'),
+            payment_account_id=request.form.get('payment_account_id'),
+            bank_name=request.form.get('bank_name', ''),
+            account_name=request.form.get('account_name', ''),
+            account_no=request.form.get('account_no', ''),
+            manual_bill_no=request.form.get('manual_bill_no', ''),
+            date_posted=request.form.get('date', ''),
+            note=request.form.get('note', ''),
+            actor=current_user,
+        )
+        db.session.commit()
+        flash('Payment saved successfully.' if created else 'Payment updated. All balances recalculated.', 'success')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Client payment save failed')
+        flash(f'Unable to save payment: {exc}', 'danger')
+    return redirect(url_for('accounts.client_payments', show=show_mode))
+
+
+@accounts_bp.route('/payments/clients/<int:id>/data')
+@login_required
+def client_payment_data(id):
+    """JSON payload that populates the shared create/edit form for an existing payment."""
+    p = Payment.query.get_or_404(id)
+    client_code = ''
+    try:
+        from app.services.lookups import get_client_by_input
+        c = get_client_by_input(p.client_name or '')
+        if c:
+            client_code = c.code or ''
+    except Exception:
+        pass
+    return jsonify({
+        'id': p.id,
+        'client_name': p.client_name or '',
+        'client_code': client_code,
+        'amount': round(float(p.amount or 0), 2),
+        'discount': round(float(p.discount or 0), 2),
+        'discount_reason': p.discount_reason or '',
+        'method': p.method or 'Cash',
+        'payment_account_id': p.payment_account_id,
+        'bank_name': p.bank_name or '',
+        'account_name': p.account_name or '',
+        'account_no': p.account_no or '',
+        'manual_bill_no': p.manual_bill_no or '',
+        'auto_bill_no': p.auto_bill_no or '',
+        'date': p.date_posted.strftime('%Y-%m-%d') if p.date_posted else '',
+        'note': p.note or '',
+        'is_void': bool(p.is_void),
+    })
+
+
+@accounts_bp.route('/payments/suppliers/save', methods=['POST'])
+@login_required
+def supplier_payment_save():
+    """Create or update a supplier payment (single shared form for Create + Edit)."""
+    if not _payments_permission_ok():
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
+    show_mode = (request.form.get('show') or 'active').strip().lower()
+    payment_id = request.form.get('payment_id', type=int)
+    try:
+        from app.services.payments_crud import save_supplier_payment
+        payment, created = save_supplier_payment(
+            payment_id=payment_id,
+            supplier_id=request.form.get('supplier_id'),
+            amount=request.form.get('amount', 0),
+            method=request.form.get('method', 'Cash'),
+            payment_account_id=request.form.get('payment_account_id'),
+            bank_name=request.form.get('bank_name', ''),
+            account_name=request.form.get('account_name', ''),
+            account_no=request.form.get('account_no', ''),
+            manual_bill_no=request.form.get('manual_bill_no', ''),
+            date_posted=request.form.get('date', ''),
+            note=request.form.get('note', ''),
+            actor=current_user,
+        )
+        db.session.commit()
+        flash('Supplier payment saved successfully.' if created else 'Supplier payment updated. All balances recalculated.', 'success')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Supplier payment save failed')
+        flash(f'Unable to save supplier payment: {exc}', 'danger')
+    return redirect(url_for('accounts.supplier_payments', show=show_mode))
+
+
+@accounts_bp.route('/payments/suppliers/<int:id>/data')
+@login_required
+def supplier_payment_data(id):
+    """JSON payload that populates the shared create/edit form for a supplier payment."""
+    p = SupplierPayment.query.get_or_404(id)
+    return jsonify({
+        'id': p.id,
+        'supplier_id': p.supplier_id,
+        'supplier_name': (p.supplier.name if p.supplier else ''),
+        'amount': round(float(p.amount or 0), 2),
+        'method': p.method or 'Cash',
+        'payment_account_id': p.payment_account_id,
+        'bank_name': p.bank_name or '',
+        'account_name': p.account_name or '',
+        'account_no': p.account_no or '',
+        'manual_bill_no': p.manual_bill_no or '',
+        'auto_bill_no': p.auto_bill_no or '',
+        'date': p.date_posted.strftime('%Y-%m-%d') if p.date_posted else '',
+        'note': p.note or '',
+        'is_void': bool(p.is_void),
+    })
+
+
+@accounts_bp.route('/payments/suppliers/<int:id>/delete', methods=['POST'])
+@login_required
+def supplier_payment_delete(id):
+    """Soft-delete a supplier payment and reverse its accounting effects."""
+    if not _payments_permission_ok():
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
+    payment = SupplierPayment.query.get_or_404(id)
+    try:
+        from app.services.payments_crud import delete_supplier_payment
+        if delete_supplier_payment(payment, actor=current_user):
+            db.session.commit()
+            flash('Supplier payment deleted. Balances reversed.', 'success')
+        else:
+            flash('Supplier payment already deleted.', 'warning')
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Supplier payment delete failed')
+        flash(f'Unable to delete supplier payment: {exc}', 'danger')
+    return redirect(request.referrer or url_for('accounts.supplier_payments'))
+
+
+@accounts_bp.route('/payments/suppliers/<int:id>/restore', methods=['POST'])
+@login_required
+def supplier_payment_restore(id):
+    """Restore a deleted supplier payment and re-apply its accounting effects."""
+    if not _payments_permission_ok():
+        flash('Permission denied', 'danger')
+        return redirect(url_for('accounts.supplier_payments'))
+    payment = SupplierPayment.query.get_or_404(id)
+    try:
+        from app.services.payments_crud import restore_supplier_payment
+        if restore_supplier_payment(payment, actor=current_user):
+            db.session.commit()
+            flash('Supplier payment restored. Balances re-applied.', 'success')
+        else:
+            flash('Supplier payment is already active.', 'warning')
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception('Supplier payment restore failed')
+        flash(f'Unable to restore supplier payment: {exc}', 'danger')
+    return redirect(request.referrer or url_for('accounts.supplier_payments'))
