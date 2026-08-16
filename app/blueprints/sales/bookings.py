@@ -101,6 +101,20 @@ def bookings_page():
                            per_page=per_page)
 
 
+@bp.route('/bookings/<int:booking_id>/edit-modal')
+@login_required
+def booking_edit_modal(booking_id):
+    """Render one booking edit form on demand instead of duplicating it in the list."""
+    booking = (
+        Booking.query
+        .options(selectinload(Booking.items))
+        .filter(Booking.id == booking_id)
+        .first_or_404()
+    )
+    clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
+    return render_template('_booking_edit_modal.html', booking=booking, clients=clients)
+
+
 @bp.route('/add_booking', methods=['POST'])
 @login_required
 def add_booking():

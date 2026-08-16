@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 """Reset User account passwords and roles.
 
+The reset credential must be supplied through ``ACCOUNT_RESET_PASSWORD`` and
+is never printed or stored in the legacy plaintext column.
+
 Usage:
-    python tools/repair_controlled/fix_accounts_and_test.py --confirm
+    ACCOUNT_RESET_PASSWORD=... python tools/repair_controlled/fix_accounts_and_test.py --confirm
 """
 import os
 import sys
@@ -12,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from tools.repair_controlled.repair_guard import preflight
 preflight(
     script_name=__file__,
-    description="Reset User account passwords and roles in the production database",
+    description="Reset selected account passwords/roles and deactivate other accounts",
 )
 
 from werkzeug.security import generate_password_hash  # noqa: E402
@@ -30,8 +33,6 @@ ALLOWED = {
     "Admin": "admin",
 }
 
-SAME_PASSWORD_FOR_ALL = "Admin@fbm12345"
-
 
 def _login_ok(client, username: str, password: str) -> bool:
     resp = client.post(
@@ -46,20 +47,19 @@ def _login_ok(client, username: str, password: str) -> bool:
 
 
 def main() -> int:
+    reset_password = os.environ.get("ACCOUNT_RESET_PASSWORD", "")
+    if len(reset_password) < 12:
+        print("ACCOUNT_RESET_PASSWORD must be set to at least 12 characters.", file=sys.stderr)
+        return 2
+
     with app.app_context():
         users = User.query.order_by(User.id.asc()).all()
 
-        # Delete root if present.
-        for u in list(users):
-            if (u.username or "").strip().lower() == "root" or (u.role or "").strip().lower() == "root":
-                db.session.delete(u)
-
-        # Delete users not in allowed list (by current username).
-        for u in users:
-            if u in db.session.deleted:
-                continue
-            if u.username not in ALLOWED:
-                db.session.delete(u)
+        # Preserve account rows and their historical references. Accounts outside
+        # the selected set are deactivated rather than hard-deleted.
+        for user in users:
+            if user.username not in ALLOWED:
+                user.status = "inactive"
 
         db.session.flush()
 
@@ -74,8 +74,8 @@ def main() -> int:
             u.role = role
             u.status = "active"
 
-            u.password_hash = generate_password_hash(SAME_PASSWORD_FOR_ALL)
-            u.password_plain = SAME_PASSWORD_FOR_ALL
+            u.password_hash = generate_password_hash(reset_password)
+            u.password_plain = None
 
         db.session.commit()
 
@@ -83,7 +83,7 @@ def main() -> int:
         client = app.test_client()
         results = {}
         for username in ALLOWED.keys():
-            results[username] = _login_ok(client, username, SAME_PASSWORD_FOR_ALL)
+            results[username] = _login_ok(client, username, reset_password)
             client.get("/logout")
 
         print("Login test results:")
@@ -97,9 +97,7 @@ def main() -> int:
             return 2
 
         print("")
-        print("Final accounts (username / password):")
-        for username in ALLOWED.keys():
-            print(f"- {username} / {SAME_PASSWORD_FOR_ALL}")
+        print("Account reset completed; credential material was not emitted or stored in plaintext.")
 
     return 0
 

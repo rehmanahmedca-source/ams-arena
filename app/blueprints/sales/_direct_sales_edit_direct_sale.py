@@ -297,8 +297,17 @@ def edit_direct_sale(id):
                 return row['booked_material']
             return None
 
-        _void_sale_booking_allocations(sale, True)
-        DirectSaleItem.query.filter_by(sale_id=id).delete()
+        # Sale lines are replaced wholesale. Preserve the old derived booking
+        # links before removing them so no dangling FK or silent audit loss is
+        # created. GRN allocations must be removed before their sale lines too.
+        from app.services.allocation_integrity import archive_and_delete_booking_allocations
+        old_booking_allocations = BookingAllocation.query.filter_by(sale_id=sale.id).all()
+        archive_and_delete_booking_allocations(
+            old_booking_allocations,
+            reason="direct sale edit replaced source sale lines",
+        )
+        _delete_sale_grn_allocations(sale)
+        DirectSaleItem.query.filter_by(sale_id=id).delete(synchronize_session=False)
         SaleDeliveryPerson.query.filter_by(sale_id=id).delete()
 
         if delivery_allocations:

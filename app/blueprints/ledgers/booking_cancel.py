@@ -91,6 +91,40 @@ def client_booking_cancel(client_id):
             flash('Selected material rows are no longer available. Please review and retry.', 'warning')
             return redirect(url_for('client_ledger', id=client.id))
 
+    # Preflight every hard-delete before writing cancellation entries or
+    # balances. A booking line with an active allocation represents a posted
+    # sale and must not be deleted merely because the legacy Entry-based FIFO
+    # calculation disagrees with it.
+    deleting_item_ids = [
+        row['item'].id
+        for row in cancel_plan
+        if row.get('item')
+        and float(row['item'].qty or 0) - float(row.get('remaining_qty') or 0) <= 0
+    ]
+    if deleting_item_ids:
+        active_allocated_ids = {
+            row[0]
+            for row in db.session.query(BookingAllocation.booking_item_id)
+            .filter(
+                BookingAllocation.booking_item_id.in_(deleting_item_ids),
+                or_(
+                    BookingAllocation.is_void.is_(False),
+                    BookingAllocation.is_void.is_(None),
+                ),
+            )
+            .distinct()
+            .all()
+        }
+        if active_allocated_ids:
+            flash(
+                'Cancellation blocked: a booking line still has an active sale allocation. '
+                'Void or correct that sale first; no booking changes were saved.',
+                'danger'
+            )
+            return redirect(url_for('client_ledger', id=client.id))
+
+    from app.services.allocation_integrity import archive_and_delete_booking_allocations
+
     touched_bookings = set()
     now = pk_now()
     for row in cancel_plan:
@@ -119,6 +153,13 @@ def client_booking_cancel(client_id):
         ))
         new_qty = float(item.qty or 0) - remaining_qty
         if new_qty <= 0:
+            # Only void historical links can remain after the active-allocation
+            # preflight. Preserve them before deleting their parent line.
+            old_allocations = BookingAllocation.query.filter_by(booking_item_id=item.id).all()
+            archive_and_delete_booking_allocations(
+                old_allocations,
+                reason='booking cancellation deleted an unconsumed source booking line',
+            )
             db.session.delete(item)
         else:
             item.qty = new_qty

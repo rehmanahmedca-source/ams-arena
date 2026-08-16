@@ -34,6 +34,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import re
 
 from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import joinedload, selectinload
 
 from models import (
     AccountTransaction,
@@ -246,12 +247,51 @@ def _resolve_pending_client(value, *, by_code, by_name):
     return by_name.get(_norm(name)) if name else None
 
 
+def _cancel_rate_lookup():
+    """Bulk-load the legacy cancellation rate resolver's source rows.
+
+    The old display helper queried the newest matching booking and then its
+    newest matching item for every cancellation.  Besides being an N+1 query
+    pattern, the helper is called more than once while one ledger is built.
+    This index preserves that exact newest-booking/newest-item precedence.
+    """
+    latest_booking = {}
+    booking_rows = Booking.query.with_entities(
+        Booking.id,
+        Booking.client_name,
+        Booking.manual_bill_no,
+        Booking.auto_bill_no,
+    ).order_by(Booking.id.desc()).all()
+    for booking_id, client_name, manual_bill_no, auto_bill_no in booking_rows:
+        client_key = _norm(client_name)
+        for bill_ref in (manual_bill_no, auto_bill_no):
+            bill_key = str(bill_ref or "").strip()
+            if client_key and bill_key:
+                latest_booking.setdefault((client_key, bill_key), booking_id)
+
+    relevant_ids = set(latest_booking.values())
+    rates = {}
+    if relevant_ids:
+        item_rows = BookingItem.query.with_entities(
+            BookingItem.id,
+            BookingItem.booking_id,
+            BookingItem.material_name,
+            BookingItem.price_at_time,
+        ).filter(BookingItem.booking_id.in_(relevant_ids)).order_by(BookingItem.id.desc()).all()
+        for _item_id, booking_id, material_name, rate in item_rows:
+            material_key = _norm(material_name)
+            if material_key:
+                rates.setdefault((booking_id, material_key), _decimal(rate))
+    return {"latest_booking": latest_booking, "rates": rates, "amounts": {}}
+
+
 def _client_snapshot():
     """Load all read-side source rows once for the payables report.
 
     This avoids one query per client on a page containing hundreds of clients.
     The snapshot is deliberately request-scoped: callers can pass it through
-    summary functions and no data is cached across requests.
+    summary functions and no data is cached across requests.  Relationships
+    read while projecting rows are eager-loaded to keep this promise true.
     """
     clients, by_id, by_code, by_name = _client_maps()
     groups = {
@@ -276,9 +316,9 @@ def _client_snapshot():
 
     for obj in Booking.query.filter(Booking.is_void == False).all():
         add("bookings", obj, client=_resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
-    for obj in DirectSale.query.filter(DirectSale.is_void == False).all():
+    for obj in DirectSale.query.options(joinedload(DirectSale.invoice)).filter(DirectSale.is_void == False).all():
         add("sales", obj, client=_resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
-    for obj in Payment.query.filter(Payment.is_void == False).all():
+    for obj in Payment.query.options(joinedload(Payment.payment_account)).filter(Payment.is_void == False).all():
         add("payments", obj, client=_resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
     for obj in PendingBill.query.filter(PendingBill.is_void == False).all():
         add("pending", obj, client=_resolve_pending_client(obj, by_code=by_code, by_name=by_name))
@@ -303,6 +343,7 @@ def _client_snapshot():
         "by_name": by_name,
         "groups": groups,
         "unresolved": unresolved,
+        "cancel_lookup": _cancel_rate_lookup(),
     }
 
 
@@ -373,11 +414,11 @@ def _client_snapshot_for(client):
         s_clauses.append(func.lower(func.trim(DirectSale.client_code)) == norm_code)
     if s_clauses:
         sq = sq.filter(or_(*s_clauses))
-    for obj in sq.all():
+    for obj in sq.options(joinedload(DirectSale.invoice)).all():
         add_by_resolver("sales", obj, _resolve_client(obj, by_id=by_id, by_code=by_code, by_name=by_name))
 
     # Payments carry a client_id and a name.
-    pq = Payment.query.filter(Payment.is_void == False)
+    pq = Payment.query.options(joinedload(Payment.payment_account)).filter(Payment.is_void == False)
     p_clauses = [Payment.client_id.in_(same_name_ids)]
     p_name = name_clause(Payment.client_name)
     if p_name is not None:
@@ -437,6 +478,7 @@ def _client_snapshot_for(client):
         "by_name": by_name,
         "groups": groups,
         "unresolved": unresolved,
+        "cancel_lookup": _cancel_rate_lookup(),
     }
 
 
@@ -479,37 +521,48 @@ def _is_derived_pending(pb, known_refs: set[str]) -> bool:
     return _norm(getattr(pb, "bill_no", None)) in known_refs
 
 
-def _cancel_amount(entry, client_name_norm: str) -> Decimal:
+def _cancel_amount(entry, client_name_norm: str, *, snapshot=None) -> Decimal:
     """Resolve legacy cancellation amount without making an entry up."""
     note = getattr(entry, "note", None) or ""
-    # The existing resolver first matches the historical booking item rate,
-    # then note rate, then note amount.  Preserve that precedence exactly;
-    # otherwise an encoded gross amount can over-credit a multi-line return.
+    lookup = (snapshot or {}).get("cancel_lookup")
+    entry_id = getattr(entry, "id", None)
+    if lookup is not None and entry_id in lookup["amounts"]:
+        return lookup["amounts"][entry_id]
+
+    # Match the historical resolver's exact precedence without issuing two
+    # queries per cancellation: newest matching booking item rate, note rate,
+    # then note amount.
+    value = None
     try:
-        from app.services.finance_clients import _resolve_cancel_display_amount
-        value = _resolve_cancel_display_amount(
-            client_name_norm,
-            getattr(entry, "bill_no", None) or getattr(entry, "auto_bill_no", None),
-            getattr(entry, "material", None) or getattr(entry, "booked_material", None),
-            getattr(entry, "qty", 0),
-            note,
-        )
-        if value is not None:
-            return max(Decimal("0.00"), _decimal(value))
+        qty = _decimal(getattr(entry, "qty", 0))
+        bill_ref = str(getattr(entry, "bill_no", None) or getattr(entry, "auto_bill_no", None) or "").strip()
+        material_key = _norm(getattr(entry, "material", None) or getattr(entry, "booked_material", None))
+        if lookup is not None and qty > 0 and bill_ref and material_key:
+            booking_id = lookup["latest_booking"].get((client_name_norm, bill_ref))
+            rate = lookup["rates"].get((booking_id, material_key)) if booking_id else None
+            if rate is not None and rate > 0:
+                value = rate * qty
     except Exception:
-        pass
-    match = re.search(r"(?:amount|value)\s*=\s*([-+]?\d+(?:\.\d+)?)", note, re.I)
-    if match:
-        return max(Decimal("0.00"), _decimal(match.group(1)))
+        value = None
+    if value is not None:
+        result = max(Decimal("0.00"), _decimal(value))
+        if lookup is not None and entry_id is not None:
+            lookup["amounts"][entry_id] = result
+        return result
     match = re.search(r"(?:rate|price)\s*=\s*([-+]?\d+(?:\.\d+)?)", note, re.I)
     if match:
-        return max(Decimal("0.00"), _decimal(match.group(1)) * _decimal(getattr(entry, "qty", 0)))
+        result = max(Decimal("0.00"), _decimal(match.group(1)) * _decimal(getattr(entry, "qty", 0)))
+    else:
+        match = re.search(r"(?:amount|value)\s*=\s*([-+]?\d+(?:\.\d+)?)", note, re.I)
+        result = max(Decimal("0.00"), _decimal(match.group(1))) if match else Decimal("0.00")
     # An unresolved cancellation remains visible with zero financial effect;
     # never invent an amount from unrelated bills.
-    return Decimal("0.00")
+    if lookup is not None and entry_id is not None:
+        lookup["amounts"][entry_id] = result
+    return result
 
 
-def _make_client_obligations(client, *, snapshot=None):
+def _make_client_obligations(client, *, snapshot=None, allocate_remaining=True):
     snapshot = snapshot or _client_snapshot()
     groups = snapshot["groups"]
     client_id = client.id
@@ -544,7 +597,7 @@ def _make_client_obligations(client, *, snapshot=None):
     known_refs = set()
     cancel_by_ref = defaultdict(lambda: Decimal("0.00"))
     for entry in cancels:
-        amount = _cancel_amount(entry, _norm(client.name))
+        amount = _cancel_amount(entry, _norm(client.name), snapshot=snapshot)
         ref = _norm(_bill_ref(entry, "bill_no", "auto_bill_no"))
         if ref and amount > 0:
             cancel_by_ref[ref] += amount
@@ -681,7 +734,7 @@ def _make_client_obligations(client, *, snapshot=None):
             })
 
     for entry in cancels:
-        amount = _cancel_amount(entry, _norm(client.name))
+        amount = _cancel_amount(entry, _norm(client.name), snapshot=snapshot)
         if amount > 0:
             external_credits.append({
                 "date": _parse_dt(getattr(entry, "date", None), getattr(entry, "time", None)),
@@ -695,21 +748,22 @@ def _make_client_obligations(client, *, snapshot=None):
     # account balance remains the movement sum below; this allocation is only
     # used to display each bill's remaining amount.
     remaining_by_key = {}
-    for obligation in obligations:
-        remaining_by_key[obligation["key"]] = max(
-            Decimal("0.00"), obligation["gross"] - obligation["embedded_credit"]
-        )
-    for credit in sorted(external_credits, key=lambda r: (r["date"], int(r["source_id"] or 0))):
-        remaining = credit["amount"]
+    if allocate_remaining:
         for obligation in obligations:
-            if remaining <= 0:
-                break
-            key = obligation["key"]
-            settle = min(remaining_by_key[key], remaining)
-            remaining_by_key[key] -= settle
-            remaining -= settle
-    for obligation in obligations:
-        obligation["remaining"] = _float(remaining_by_key[obligation["key"]])
+            remaining_by_key[obligation["key"]] = max(
+                Decimal("0.00"), obligation["gross"] - obligation["embedded_credit"]
+            )
+        for credit in sorted(external_credits, key=lambda r: (r["date"], int(r["source_id"] or 0))):
+            remaining = credit["amount"]
+            for obligation in obligations:
+                if remaining <= 0:
+                    break
+                key = obligation["key"]
+                settle = min(remaining_by_key[key], remaining)
+                remaining_by_key[key] -= settle
+                remaining -= settle
+        for obligation in obligations:
+            obligation["remaining"] = _float(remaining_by_key[obligation["key"]])
 
     return {
         "bookings": bookings,
@@ -825,7 +879,7 @@ def build_client_financial_ledger(client, *, snapshot=None):
         ))
 
     for entry in details["cancels"]:
-        amount = _cancel_amount(entry, _norm(client.name))
+        amount = _cancel_amount(entry, _norm(client.name), snapshot=snapshot)
         rows.append(_row(
             date_value=_parse_dt(getattr(entry, "date", None), getattr(entry, "time", None)),
             row_type="Booking Cancel",
@@ -859,6 +913,59 @@ def build_client_financial_ledger(client, *, snapshot=None):
         "total_credit": total_credit,
         "closing_balance": closing,
         "last_transaction_date": max(non_opening_dates) if non_opening_dates else None,
+        "last_payment_date": max(payment_dates) if payment_dates else None,
+        "status": "Outstanding" if closing > _float(EPS) else ("Credit" if closing < -_float(EPS) else "Settled"),
+    }
+
+
+def _build_client_financial_summary(client, *, snapshot):
+    """Project the fields needed by grouped payables without materialising rows.
+
+    This is algebraically equivalent to ``build_client_financial_ledger``:
+    obligations are debits, embedded credits/external credits are credits, and
+    refunds are negative payment movements (therefore debits).  Full detail
+    ledgers continue to use the row builder as their authoritative view.
+    """
+    details = _make_client_obligations(client, snapshot=snapshot, allocate_remaining=False)
+    balance = _decimal(getattr(client, "opening_balance", 0))
+    for obligation in details["obligations"]:
+        balance += obligation["gross"] - obligation["embedded_credit"]
+    balance -= sum((credit["amount"] for credit in details["external_credits"]), Decimal("0.00"))
+    # Positive payment movements are already present in external_credits.
+    # Negative movements (refunds/repayments) are deliberately not, so add
+    # their inverse effect here.
+    for _payment, amount, _reference, _ptype in details["payment_movements"]:
+        if amount < 0:
+            balance -= amount
+    if abs(balance) < EPS:
+        balance = Decimal("0.00")
+
+    tx_dates = []
+    payment_dates = []
+    tx_dates.extend(o["date"] for o in details["obligations"] if o["date"] != datetime.min)
+    for payment, _amount, _reference, _ptype in details["payment_movements"]:
+        dt = _parse_dt(getattr(payment, "date_posted", None))
+        if dt != datetime.min:
+            tx_dates.append(dt)
+            payment_dates.append(dt)
+    for waive in details["waives"]:
+        dt = _parse_dt(getattr(waive, "date_posted", None))
+        if dt != datetime.min:
+            tx_dates.append(dt)
+    for entry in details["cancels"]:
+        dt = _parse_dt(getattr(entry, "date", None), getattr(entry, "time", None))
+        if dt != datetime.min:
+            tx_dates.append(dt)
+    payment_dates.extend(
+        obligation["date"] for obligation in details["obligations"]
+        if obligation.get("embedded_paid", Decimal("0.00")) > 0 and obligation["date"] != datetime.min
+    )
+    closing = _float(balance)
+    return {
+        "entity": client,
+        "entity_type": "client",
+        "closing_balance": closing,
+        "last_transaction_date": max(tx_dates) if tx_dates else None,
         "last_payment_date": max(payment_dates) if payment_dates else None,
         "status": "Outstanding" if closing > _float(EPS) else ("Credit" if closing < -_float(EPS) else "Settled"),
     }
@@ -952,7 +1059,7 @@ def build_current_payables(
         canonical = canonical_by_name.get(_norm(getattr(client, "name", None)))
         if canonical is not None and canonical.id != client.id:
             continue
-        ledger = build_client_financial_ledger(client, snapshot=snapshot)
+        ledger = _build_client_financial_summary(client, snapshot=snapshot)
         summary = _summary_from_ledger(ledger)
         if _summary_matches(
             summary,
@@ -1208,6 +1315,58 @@ def build_supplier_financial_ledger(supplier, **filters):
     return ledger
 
 
+def build_supplier_payable_summaries(suppliers=None):
+    """Return authoritative supplier balances with a bounded query count.
+
+    The projection retains the full supplier ledger's legacy-GRN-payment and
+    supplier-refund rules, but avoids creating display rows when a dashboard
+    needs only closing balances.
+    """
+    if suppliers is None:
+        suppliers = Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all()
+    else:
+        suppliers = list(suppliers)
+    if not suppliers:
+        return {}
+
+    grns = GRN.query.options(selectinload(GRN.items)).filter(GRN.is_void == False).all()
+    payments = SupplierPayment.query.filter(SupplierPayment.is_void == False).all()
+    payments_by_supplier = defaultdict(list)
+    for payment in payments:
+        payments_by_supplier[payment.supplier_id].append(payment)
+
+    summaries = {}
+    for supplier in suppliers:
+        balance = _decimal(getattr(supplier, "opening_balance", 0))
+        supplier_name = _norm(getattr(supplier, "name", ""))
+        supplier_payments = payments_by_supplier.get(supplier.id, [])
+        for grn in grns:
+            if grn.supplier_id != supplier.id and _norm(grn.supplier) != supplier_name:
+                continue
+            balance += _decimal(calculate_grn_total(grn))
+            paid_amount = _decimal(getattr(grn, "paid_amount", 0))
+            marker = f"[auto_grn_pay:{grn.id}]"
+            has_auto_payment = any(
+                (payment.source_type == "GRN" and payment.source_id == grn.id)
+                or marker in (payment.note or "").lower()
+                for payment in supplier_payments
+            )
+            if paid_amount > 0 and not has_auto_payment:
+                balance -= paid_amount
+
+        for payment in supplier_payments:
+            amount = _decimal(getattr(payment, "amount", 0))
+            if amount == 0:
+                continue
+            payment_type = _norm(getattr(payment, "payment_type", None))
+            is_credit = amount < 0 or payment_type in {"refund", "return", "credit", "supplier return"}
+            balance += abs(amount) if is_credit else -abs(amount)
+        if abs(balance) < EPS:
+            balance = Decimal("0.00")
+        summaries[supplier.id] = _float(balance)
+    return summaries
+
+
 def _delivery_person_rows(person):
     rows = []
     opening = _decimal(getattr(person, "opening_balance", 0))
@@ -1402,6 +1561,7 @@ __all__ = [
     "build_client_financial_ledger",
     "build_current_payables",
     "build_supplier_financial_ledger",
+    "build_supplier_payable_summaries",
     "build_delivery_person_financial_ledger",
     "filter_ledger_rows",
     "financial_integrity_audit",

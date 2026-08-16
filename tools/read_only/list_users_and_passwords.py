@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+"""List user account state without exposing credential material."""
 import os
 import sys
 
@@ -13,12 +14,15 @@ def main() -> int:
         users = User.query.order_by(User.id.asc()).all()
         print(f"Total users: {len(users)}")
         print("")
-        print("id\tusername\trole\tstatus\tpassword_plain")
-        for u in users:
-            pw = u.password_plain
-            if pw is None:
-                pw = ""
-            print(f"{u.id}\t{u.username}\t{u.role}\t{u.status}\t{pw}")
+        print("id\tusername\trole\tstatus\thash_configured\tlegacy_plaintext_present")
+        for user in users:
+            hash_configured = bool((user.password_hash or "").strip())
+            plaintext_present = bool((user.password_plain or "").strip())
+            print(
+                f"{user.id}\t{user.username}\t{user.role}\t{user.status}\t"
+                f"{str(hash_configured).lower()}\t{str(plaintext_present).lower()}"
+            )
+        db.session.rollback()
     return 0
 
 

@@ -46,7 +46,6 @@ def clients():
         c.total_bills = bill_counts.get(c.code, 0) or 0
         c.total_deliveries = delivery_totals.get(c.name, 0) or 0
 
-    active_clients_list = Client.query.filter(Client.is_active == True).order_by(Client.name.asc()).all()
     all_clients_list = Client.query.order_by(Client.name.asc()).all()
     categories = [
         row[0] for row in db.session.query(Client.category).distinct().filter(
@@ -64,7 +63,15 @@ def clients():
                            inactive_pagination=inactive_pagination,
                            search=search,
                            category=category,
-                           active_clients=active_clients_list,
                            all_clients=all_clients_list,
                            categories=categories)
+
+
+@bp.route('/clients/<int:client_id>/modals')
+@login_required
+def client_modals(client_id):
+    """Render one active client's edit/transfer dialogs on demand."""
+    client = Client.query.filter(Client.id == client_id, Client.is_active == True).first_or_404()
+    active_clients = Client.query.filter(Client.is_active == True).order_by(Client.name.asc()).all()
+    return render_template('_client_modals.html', c=client, active_clients=active_clients)
 
