@@ -12,10 +12,10 @@ Before production release, the operator must identify the actual host and instal
 
 ```bash
 cd <REAL_PRODUCTION_CHECKOUT>
-BACKUP_EMBEDDED_SCHEDULER=0 .venv/bin/python tools/maintenance.py backup-if-due
+.venv/bin/python tools/maintenance.py backup-if-due
 ```
 
-Run it hourly. Then verify on that host with:
+Run it hourly. Cross-process locking makes overlap with the embedded fallback recoverable and prevents duplicate concurrent publication. Then verify on that host with:
 
 ```bash
 cd <REAL_PRODUCTION_CHECKOUT>
@@ -24,7 +24,7 @@ cd <REAL_PRODUCTION_CHECKOUT>
 .venv/bin/python tools/maintenance.py status
 ```
 
-The status must be `HEALTHY`, retention must be `3`, and the scheduler's native history/log must show a successful hourly invocation. Keep the embedded cross-process-locked scheduler enabled until that external scheduler is demonstrated.
+The status must be `HEALTHY`, retention must be `3`, and the scheduler's native history/log must show a successful hourly invocation. Keep the embedded cross-process-locked scheduler enabled until that external scheduler is demonstrated; only then set `BACKUP_EMBEDDED_SCHEDULER=0` in the real application service environment and restart that service with the host's actual process manager.
 
 ## 1. Foreign-key diagnosis and remediation
 
