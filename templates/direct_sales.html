@@ -2675,54 +2675,71 @@ function attachFormListeners(form) {
     if (!form.dataset.salePrecheckBound) {
         form.dataset.salePrecheckBound = '1';
         // Register in the CAPTURE phase.  The global page loader also listens
-        // for `submit` (bubble phase) and latches `__formSubmitting=true` on the
-        // first event.  Running first lets us `preventDefault()` the initial
-        // submit before that latch is set, so the follow-up `requestSubmit()`
-        // is not swallowed and the sale form no longer freezes on "Saving…".
+        // for `submit` (bubble phase) and latches `__formSubmitting=true` on
+        // the first event it sees.  Running first lets us `preventDefault()`
+        // the initial submit before that latch is set, so the follow-up
+        // `requestSubmit()` is not swallowed and the sale form no longer
+        // freezes on "Saving…".
+        //
+        // Submit flow (two passes):
+        //   1st pass (real Save click): preventDefault, lock the Save button,
+        //      refresh booking status + financial summary, validate once.
+        //      If valid -> set data-final-submit and requestSubmit() again.
+        //   2nd pass (programmatic): data-final-submit is set -> clear it and
+        //      let the native POST through; layout.html takes over with the
+        //      "Saving…" progress and its global double-submit latch.
+        // The in-flight lock (data-submitting) must ONLY guard the 1st pass,
+        // otherwise the follow-up requestSubmit() gets swallowed and clicking
+        // Save appears to do nothing at all (no navigation, no data saved).
         const setSubmitting = (on) => {
             form.dataset.submitting = on ? '1' : '';
             form.querySelectorAll('button[type="submit"]').forEach((b) => { b.disabled = !!on; });
         };
         form.addEventListener('submit', function (e) {
             if (form.dataset.skipValidation === '1') {
+                // Hold-draft flow: bypass the precheck entirely.
                 form.dataset.skipValidation = '';
                 return;
             }
-            // A submission is already in flight for this sheet — ignore any
-            // further Save clicks (explicit guard, not just button disable).
-            if (form.dataset.submitting === '1') {
-                e.preventDefault();
+            if (form.dataset.finalSubmit === '1') {
+                // Second, programmatic submit — the precheck already passed.
+                // Allow the native POST through; layout.html's global submit
+                // latch is the final guard against double submission.
+                form.dataset.finalSubmit = '';
                 return;
             }
-            if (form.dataset.bookingRefreshDone === '1') {
-                // Validation has passed once; allow this (re)submit through.
-                // The global submit latch in layout.html is the final guard.
-                form.dataset.bookingRefreshDone = '';
-                if (!validateSaleFormBeforeSubmit(form)) {
-                    setSubmitting(false);  // release lock so the user can fix
-                    e.preventDefault();
-                } else {
-                    setSubmitting(true);   // stay locked while POST is in flight
-                }
-                return;
-            }
+            // First submit: block the native POST, run the async precheck,
+            // then re-submit programmatically.
             e.preventDefault();
+            if (form.dataset.submitting === '1') {
+                return; // precheck already in flight — ignore repeat clicks
+            }
             setSubmitting(true);  // lock immediately: disable Save, block re-entry
             const codeEl = form.querySelector('input[name="client_code"]');
             const code = (codeEl && codeEl.value ? codeEl.value : '').trim();
             const bookingId = form.dataset.bookingContainer || 'bookingStatusContainer';
             const financialId = form.dataset.financialContainer || 'clientFinancialContainer';
             const proceed = () => {
-                form.querySelectorAll('.compact-item-row').forEach((row) => checkItemBookingStatus(row));
-                if (!validateSaleFormBeforeSubmit(form)) {
-                    setSubmitting(false);  // validation failed — release the lock
-                    return;
+                try {
+                    form.querySelectorAll('.compact-item-row').forEach((row) => checkItemBookingStatus(row));
+                    if (!validateSaleFormBeforeSubmit(form)) {
+                        setSubmitting(false);  // validation failed — release the lock
+                        return;
+                    }
+                    form.dataset.finalSubmit = '1';
+                    setSubmitting(false);  // unlock so the final pass can submit
+                    form.requestSubmit();
+                } catch (err) {
+                    console.error('Sale precheck failed:', err);
+                    setSubmitting(false);  // never leave the sheet locked
                 }
-                form.dataset.bookingRefreshDone = '1';
-                form.requestSubmit();
             };
             if (code) {
-                updateBookingStatus(code, bookingId, financialId).finally(proceed);
+                try {
+                    updateBookingStatus(code, bookingId, financialId).finally(proceed);
+                } catch (err) {
+                    proceed();  // a sync throw in booking refresh must not block saving
+                }
             } else {
                 proceed();
             }
@@ -2883,9 +2900,11 @@ function resetAddSaleForm() {
         idemInput.value = key;
     }
 
-    // Re-enable Save + clear the in-flight flag so a previously failed submit
-    // never leaves the sheet locked.
+    // Re-enable Save + clear the in-flight flags so a previously failed submit
+    // never leaves the sheet locked or skips the precheck.
     form.dataset.submitting = '';
+    form.dataset.finalSubmit = '';
+    form.dataset.skipValidation = '';
     form.querySelectorAll('button[type="submit"]').forEach(function (b) { b.disabled = false; });
 
     // Clear Client Search & Display
