@@ -79,7 +79,7 @@ def add_user():
         restrict_backdated_grn_edit = ('restrict_backdated_edit' in request.form)
         new_u = User(username=un,
                      password_hash=pw,
-                     password_plain=raw_pw,
+                     password_plain=None,
                      role=rl,
                      restrict_backdated_edit=restrict_backdated_grn_edit,
                      can_manage_directory=(
@@ -107,7 +107,7 @@ def edit_user_permissions(id):
         raw_pw = str(request.form.get('password') or '').strip()
         if raw_pw:
             u.password_hash = generate_password_hash(raw_pw)
-            u.password_plain = raw_pw
+            u.password_plain = None
         permission_values = _permissions_from_request_form()
         for field, value in permission_values.items():
             setattr(u, field, value)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import secrets
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import timedelta
 from pathlib import Path
 
@@ -75,12 +76,21 @@ def create_app(test_config: dict | None = None) -> Flask:
         FULL_RAW_IMPORT_ENABLED="1",
         IMPORT_UPLOADS_DIR=str(instance_dir / "import_uploads"),
         IMPORT_REPORTS_DIR=str(instance_dir / "import_reports"),
+        UPLOAD_DIR=os.environ.get("UPLOAD_DIR", str(root / "static" / "uploads")),
+        BACKUP_DIR=os.environ.get("BACKUP_DIR", str(instance_dir / "storage" / "backups")),
+        MAINTENANCE_TEMP_DIR=os.environ.get("MAINTENANCE_TEMP_DIR", str(instance_dir / "storage" / "temp")),
+        BACKUP_INTERVAL_SECONDS=int(os.environ.get("BACKUP_INTERVAL_SECONDS", "3600") or "3600"),
+        BACKUP_RETENTION=int(os.environ.get("BACKUP_RETENTION", "3") or "3"),
+        BACKUP_LOCK_STALE_SECONDS=int(os.environ.get("BACKUP_LOCK_STALE_SECONDS", "7200") or "7200"),
+        TEMP_RETENTION_SECONDS=int(os.environ.get("TEMP_RETENTION_SECONDS", "86400") or "86400"),
+        MIN_FREE_DISK_BYTES=int(os.environ.get("MIN_FREE_DISK_BYTES", str(100 * 1024 * 1024)) or "0"),
+        BACKUP_EMBEDDED_SCHEDULER=(os.environ.get("BACKUP_EMBEDDED_SCHEDULER", "1").strip().lower() not in ("0", "false", "no")),
         TESTING=False,
     )
     if test_config:
         app.config.update(test_config)
 
-    _configure_logging()
+    _configure_logging(app)
     db.init_app(app)
 
     @app.before_request
@@ -175,6 +185,11 @@ def create_app(test_config: dict | None = None) -> Flask:
         except Exception:
             logging.getLogger(__name__).exception("bootstrap skipped/failed")
 
+    # Start once at application startup, never from a user request. The
+    # cross-process filesystem lock prevents duplicate work under Gunicorn.
+    from app.services.maintenance import start_embedded_scheduler
+    start_embedded_scheduler(app)
+
     return app
 
 
@@ -201,14 +216,38 @@ def _alias_unprefixed_endpoints(app: Flask) -> None:
             pass
 
 
-def _configure_logging() -> None:
+def _configure_logging(app: Flask) -> None:
+    """Configure console output and a bounded technical diagnostic log."""
     root = logging.getLogger()
-    if root.handlers:
-        return
     formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s]: %(message)s")
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(formatter)
+    if not any(getattr(handler, "_ams_console", False) for handler in root.handlers):
+        console = logging.StreamHandler()
+        console._ams_console = True
+        console.setLevel(logging.INFO)
+        console.setFormatter(formatter)
+        root.addHandler(console)
+
+    log_dir = Path(app.instance_path) / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = (log_dir / "errorlog.txt").resolve()
+        existing = any(
+            isinstance(handler, RotatingFileHandler)
+            and Path(getattr(handler, "baseFilename", "")).resolve() == log_path
+            for handler in root.handlers
+        )
+        if not existing:
+            rotating = RotatingFileHandler(
+                log_path,
+                maxBytes=int(os.environ.get("ERROR_LOG_MAX_BYTES", str(2 * 1024 * 1024))),
+                backupCount=int(os.environ.get("ERROR_LOG_BACKUP_COUNT", "3")),
+                encoding="utf-8",
+            )
+            rotating.setLevel(logging.WARNING)
+            rotating.setFormatter(formatter)
+            root.addHandler(rotating)
+    except OSError:
+        # A read-only log directory must not prevent the application starting.
+        root.exception("Unable to configure rotating file logging")
     root.setLevel(logging.INFO)
-    root.addHandler(console)
     logging.getLogger("werkzeug").setLevel(logging.WARNING)

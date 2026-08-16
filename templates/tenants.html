@@ -295,7 +295,6 @@
               <thead>
                 <tr>
                   <th>Username</th>
-                  <th>Password</th>
                   <th>Role</th>
                   <th>Status</th>
                 </tr>
@@ -304,7 +303,6 @@
                 {% for u in users %}
                 <tr>
                   <td class="fw-bold">{{ u.username }}</td>
-                  <td><code class="text-warning">{{ u.password_plain or 'Not stored' }}</code></td>
                   <td>{{ u.role }}</td>
                   <td>{{ u.status or '' }}</td>
                 </tr>

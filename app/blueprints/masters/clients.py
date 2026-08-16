@@ -26,9 +26,25 @@ def clients():
     inactive_pagination = inactive_query.order_by(Client.name.asc()).paginate(page=page_inactive, per_page=10)
 
     all_visible_clients = active_pagination.items + inactive_pagination.items
+    # Two grouped queries replace two queries per visible client while keeping
+    # the exact counters shown by the template.
+    visible_codes = [c.code for c in all_visible_clients if c.code]
+    visible_names = [c.name for c in all_visible_clients if c.name]
+    bill_counts = dict(
+        db.session.query(PendingBill.client_code, func.count(PendingBill.id))
+        .filter(PendingBill.client_code.in_(visible_codes))
+        .group_by(PendingBill.client_code)
+        .all()
+    ) if visible_codes else {}
+    delivery_totals = dict(
+        db.session.query(Entry.client, func.sum(Entry.qty))
+        .filter(Entry.type == 'OUT', Entry.client.in_(visible_names))
+        .group_by(Entry.client)
+        .all()
+    ) if visible_names else {}
     for c in all_visible_clients:
-        c.total_bills = db.session.query(func.count(PendingBill.id)).filter_by(client_code=c.code).scalar() or 0
-        c.total_deliveries = db.session.query(func.sum(Entry.qty)).filter_by(client=c.name, type='OUT').scalar() or 0
+        c.total_bills = bill_counts.get(c.code, 0) or 0
+        c.total_deliveries = delivery_totals.get(c.name, 0) or 0
 
     active_clients_list = Client.query.filter(Client.is_active == True).order_by(Client.name.asc()).all()
     all_clients_list = Client.query.order_by(Client.name.asc()).all()
