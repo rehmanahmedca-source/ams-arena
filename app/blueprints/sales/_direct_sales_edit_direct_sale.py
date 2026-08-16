@@ -148,6 +148,84 @@ def edit_direct_sale(id):
         alternate_list = request.form.getlist('alternate_material[]')
         qtys = request.form.getlist('qty[]')
         rates = request.form.getlist('unit_rate[]')
+        grn_item_ids = request.form.getlist('grn_item_id[]')
+        ignore_items = request.form.getlist('ignore_booking_item[]')
+
+        # Compute per-material booking balances for the resolved client so that an
+        # edit can split each posted line into a reserved (rate 0) slice and a
+        # chargeable slice exactly like the add-sale flow does.  Without this, an
+        # existing booked line loses its `is_booking` flag during reconstruction
+        # and all booking allocations are silently dropped on save.
+        booking_balances = {}
+        if client and category in ['Booking Delivery', 'Mixed Transaction']:
+            norm_client = func.lower(func.trim(client.name))
+            booking_ids = [
+                b.id for b in Booking.query.filter(
+                    Booking.is_void == False,
+                    func.lower(func.trim(Booking.client_name)) == norm_client,
+                ).all()
+            ]
+            booked_totals = {}
+            if booking_ids:
+                for bit in BookingItem.query.filter(BookingItem.booking_id.in_(booking_ids)).all():
+                    key = _material_norm_key(bit.material_name)
+                    if key:
+                        booked_totals[key] = booked_totals.get(key, 0) + float(bit.qty or 0)
+
+            delivered_totals = {}
+            del_query = Entry.query.filter(
+                or_(Entry.client_code == client.code,
+                    func.lower(func.trim(Entry.client)) == func.lower(func.trim(client.name))),
+                Entry.type == 'OUT',
+                Entry.is_void == False,
+                not_(and_(Entry.nimbus_no == 'Direct Sale',
+                          Entry.client_category != 'Booking Delivery'))
+            )
+            # Exclude entries that belong to the sale being edited: the old
+            # allocations/entries are still in the table at this point and
+            # would otherwise make the balance appear fully consumed, causing
+            # a no-op edit to drop the booking allocation.
+            del_query = del_query.filter(
+                or_(Entry.source_module != 'sales',
+                    Entry.source_id != sale.id)
+            )
+            del_rows = del_query.all()
+            for e in del_rows:
+                key = _material_norm_key(e.booked_material or e.material)
+                if key:
+                    delivered_totals[key] = delivered_totals.get(key, 0) + float(e.qty or 0)
+
+            returned_totals = {}
+            ret_query = Entry.query.filter(
+                or_(Entry.client_code == client.code,
+                    func.lower(func.trim(Entry.client)) == func.lower(func.trim(client.name))),
+                Entry.type == 'IN',
+                Entry.is_void == False,
+                Entry.nimbus_no == 'Material Return',
+                Entry.transaction_category == 'Booked Return'
+            )
+            # Same exclusion rationale as delivered totals above.
+            ret_query = ret_query.filter(
+                or_(Entry.source_module != 'sales',
+                    Entry.source_id != sale.id)
+            )
+            ret_rows = ret_query.all()
+            for e in ret_rows:
+                key = _material_norm_key(e.material)
+                if key:
+                    returned_totals[key] = returned_totals.get(key, 0) + float(e.qty or 0)
+
+            for raw in set(materials_list):
+                m = get_material_by_input(raw)
+                if not m:
+                    continue
+                key = _material_norm_key(m.name)
+                booking_balances[key] = max(
+                    0.0,
+                    float(booked_totals.get(key, 0) or 0)
+                    - float(delivered_totals.get(key, 0) or 0)
+                    + float(returned_totals.get(key, 0) or 0),
+                )
 
         parsed_items = []
         max_len = max(len(materials_list), len(alternate_list), len(qtys), len(rates))
@@ -174,28 +252,87 @@ def edit_direct_sale(id):
                 alt_obj = get_material_by_input(alt_name_in)
                 if not alt_obj:
                     return _fail_edit(f'Select a valid alternate material from list. "{alt_name_in}" was not found.')
-            if alt_obj and rate_val > 0:
-                return _fail_edit('Alternate material is only allowed for booked items (rate 0).')
+
+            grn_item_id = None
+            if idx < len(grn_item_ids) and grn_item_ids[idx]:
+                try:
+                    grn_item_id = int(grn_item_ids[idx])
+                except (ValueError, TypeError):
+                    grn_item_id = None
+
+            ignore_flag = False
+            if idx < len(ignore_items):
+                ignore_flag = str(ignore_items[idx] or '').strip().lower() in ['1', 'true', 'on', 'yes']
+            # Cash / credit / open khata are chargeable sales — never silently
+            # consume booking qty (mirrors add_direct_sale).
+            if category in ['Cash', 'Credit Customer', 'Open Khata']:
+                ignore_flag = True
+
             delivered_name = alt_obj.name if alt_obj else mat_obj.name
-            parsed_items.append({
-                'product_name': delivered_name,
-                'booked_material': (mat_obj.name if alt_obj and delivered_name != mat_obj.name else None),
-                'is_alternate': bool(alt_obj and delivered_name != mat_obj.name),
-                'qty': qty_val,
-                'price_at_time': rate_val
-            })
+            is_alt = bool(alt_obj and delivered_name != mat_obj.name)
+
+            if is_alt and rate_val > 0:
+                return _fail_edit('Alternate material is only allowed for booked items (rate 0).')
+
+            # Default whole-row chargeable slice (used for pure cash/credit and
+            # for any posted excess after the reserved slice is taken).
+            qty_booking = 0.0
+            qty_sale = qty_val
+            mat_key = _material_norm_key(mat_obj.name)
+            balance = 0.0 if ignore_flag else float(booking_balances.get(mat_key, 0) or 0)
+            if balance > 0:
+                qty_booking = min(qty_val, balance)
+                qty_sale = qty_val - qty_booking
+                booking_balances[mat_key] = balance - qty_booking
+
+            if is_alt and (ignore_flag or qty_booking <= 0):
+                return _fail_edit(
+                    f'Alternate material is only allowed for booked items. "{mat_obj.name}" has no booking balance.'
+                )
+
+            if qty_booking > 0:
+                parsed_items.append({
+                    'product_name': delivered_name,
+                    'booked_material': mat_obj.name if is_alt else None,
+                    'qty': qty_booking,
+                    'price_at_time': 0,
+                    'grn_item_id': None,
+                    'is_booking': True,
+                    'is_alternate': is_alt,
+                })
+
+            if qty_sale > 0:
+                # For a pure booked (rate 0) row with no booking balance left
+                # there is nothing to charge.
+                effective_rate = rate_val
+                if effective_rate <= 0:
+                    effective_rate = float(mat_obj.unit_price or 0)
+                parsed_items.append({
+                    'product_name': mat_obj.name,
+                    'booked_material': None,
+                    'qty': qty_sale,
+                    'price_at_time': effective_rate,
+                    'grn_item_id': grn_item_id,
+                    'is_booking': False,
+                    'is_alternate': False,
+                })
 
         if not parsed_items:
             return _fail_edit('No valid material items were captured. Add at least one item with qty > 0.')
 
         parsed_items = _dedupe_direct_sale_items(parsed_items)
+        parsed_items = _expand_chargeable_items_fifo(
+            parsed_items,
+            as_of_dt=(sale_posted_at.date() if sale_posted_at else None),
+            exclude_sale_id=sale.id,
+        )
 
         total_qty = sum(_to_float_or_zero(i.get('qty')) for i in parsed_items)
         if delivery_allocations and delivery_bags_total > (total_qty + 0.0001):
             return _fail_edit('Total delivery bags cannot exceed total material quantity for this sale.')
 
-        any_booking_item = any(float(i['price_at_time'] or 0) <= 0 for i in parsed_items)
-        any_chargeable_item = any(float(i['price_at_time'] or 0) > 0 for i in parsed_items)
+        any_booking_item = any(bool(i.get('is_booking')) for i in parsed_items)
+        any_chargeable_item = any((not bool(i.get('is_booking'))) and float(i.get('price_at_time') or 0) > 0 for i in parsed_items)
         amount = sum((float(i['qty'] or 0) * float(i['price_at_time'] or 0)) for i in parsed_items)
         # Booking Delivery can have zero-priced dispatch (amount=0) while still allowing
         # a financial discount adjustment in client ledger.
