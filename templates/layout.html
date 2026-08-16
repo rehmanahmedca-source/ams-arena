@@ -710,6 +710,8 @@ function toggleNavGroup(groupId, btn) {
         });
     }
 
+</script>
+<script>
     // Global Utilities
     let loadingShownAt = 0;
     let loadingWatchTimer = null;
@@ -775,9 +777,21 @@ function toggleNavGroup(groupId, btn) {
         if (e.key === 'Escape') hideLoading();
     });
     function escapeReportHtml(value) {
-        return String(value == null ? '' : value).replace(/[&<>'"]/g, (ch) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-        })[ch]);
+        // NOTE: this function runs inside a <script> element, so the entity
+        // strings below must never appear literally in the source.  Browsers
+        // decode character references in script data (e.g. &#39; -> '), which
+        // previously turned the "'" entry into ''' and killed this entire
+        // script block with a SyntaxError on every page.
+        return String(value == null ? '' : value).replace(/[&<>'"]/g, (ch) => {
+            switch (ch) {
+                case '&': return '&amp;';
+                case '<': return '&lt;';
+                case '>': return '&gt;';
+                case '"': return '&quot;';
+                case "'": return '\u0026#39;';
+                default: return ch;
+            }
+        });
     }
     function fillJobReport(title, summary, tableRows, people, keepOpen) {
         const wrap = document.getElementById('taskProgressReport');
@@ -1261,6 +1275,8 @@ function toggleNavGroup(groupId, btn) {
         }
     }
 
+</script>
+<script>
     // Navigation and Form Loading States
     document.querySelectorAll('a[href]:not([href^="#"]):not([data-bs-toggle])').forEach(link => {
         link.addEventListener('click', function(e) {
@@ -1406,6 +1422,8 @@ function toggleNavGroup(groupId, btn) {
     // Financial widgets now refresh on real activity only: window focus,
     // tab becoming visible, and after a transaction save.
 
+</script>
+<script>
     // Combobox logic for reuse in sub-pages
     function bindComboboxAnchor(inputId, listId) {
         const list = document.getElementById(listId);

@@ -77,7 +77,7 @@ function _removePageRow(buttonEl) {
 }
 
 function _createPageRowHtml(value) {
-    const safeVal = (value || '').replace(/"/g, '&quot;');
+    const safeVal = (value || '').replace(/"/g, '\u0026quot;');
     return `
         <div class="input-group mb-2 page-row">
             <input type="text" name="page_entry" class="form-control bg-dark text-white border-secondary" placeholder="Type page detail (e.g. BOOK 2 PAGE 117 CEMENT)" value="${safeVal}">
