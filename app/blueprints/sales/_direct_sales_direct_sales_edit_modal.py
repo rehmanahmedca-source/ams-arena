@@ -48,6 +48,24 @@ def direct_sale_edit_modal(sale_id):
         row for row in clients
         if (row.name or '').strip().casefold() == (sale.client_name or '').strip().casefold()
     ), None)
+
+    # Surface the original booked material for each existing sale line so that
+    # the edit modal can pre-fill the "Alternate" field.  Without this, an
+    # alternate-material dispatch (e.g. delivered KOHAT against RENT-CEMENT
+    # booking) loses its booking identity in the UI and on save.
+    refs = _direct_sale_bill_refs(sale)
+    old_entries = Entry.query.filter(
+        Entry.bill_no.in_(refs),
+        Entry.nimbus_no == 'Direct Sale',
+        Entry.is_void == False,
+    ).all()
+    alt_by_delivered = {}
+    for e in old_entries:
+        delivered = (e.material or '').strip()
+        booked = (e.booked_material or '').strip()
+        if delivered and booked and booked != delivered:
+            alt_by_delivered[delivered] = booked
+
     return render_template(
         '_direct_sale_edit_modal.html',
         sale=sale,
@@ -59,4 +77,5 @@ def direct_sale_edit_modal(sale_id):
         delivery_allocations_by_sale={sale.id: delivery_allocations},
         delivery_rent_totals_by_sale={sale.id: rent_total},
         sale_client_code_by_id={sale.id: matched_client.code if matched_client else sale.client_code},
+        sale_alt_material_by_product=alt_by_delivered,
     )
