@@ -302,7 +302,13 @@
         #taskProgressModal,
         #taskResultModal,
         #dueReminderModal {
-            z-index: 2600;
+            /* !important also wins while Bootstrap is applying an inline
+               z-index during modal transitions. */
+            z-index: 2600 !important;
+        }
+        /* The backdrop is a body-level sibling, not a child of the modal. */
+        body > .modal-backdrop.ams-top-modal-backdrop {
+            z-index: 2590 !important;
         }
         /* Backdrops are siblings appended to <body>, so they cannot inherit this
            via a descendant rule; ensureTopModal() promotes the matching backdrop
@@ -653,9 +659,17 @@
         const promote = function () {
             modalEl.style.zIndex = String(z);
             // Bootstrap appends this modal's backdrop as the last .modal-backdrop.
+            // Mark the exact backdrop rather than relying only on DOM order; a
+            // second modal can otherwise cause the wrong backdrop to be raised.
             setTimeout(function () {
                 const backdrops = document.querySelectorAll('.modal-backdrop');
-                if (backdrops.length) backdrops[backdrops.length - 1].style.zIndex = String(z - 10);
+                backdrops.forEach(function (backdrop) {
+                    backdrop.classList.remove('ams-top-modal-backdrop');
+                });
+                if (backdrops.length) {
+                    backdrops[backdrops.length - 1].classList.add('ams-top-modal-backdrop');
+                    backdrops[backdrops.length - 1].style.zIndex = String(z - 10);
+                }
             }, 0);
         };
         modalEl.addEventListener('show.bs.modal', promote);
