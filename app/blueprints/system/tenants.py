@@ -91,7 +91,7 @@ def tenants_create():
         db.session.add(User(
             username=default_username,
             password_hash=generate_password_hash(default_password),
-            password_plain=default_password,
+            password_plain=None,
             role='admin',
             status='active',
             tenant_id=tenant.id
@@ -119,7 +119,7 @@ def tenants_reset_admin(tenant_id):
         admin_user = User(
             username=default_username,
             password_hash=generate_password_hash(default_password),
-            password_plain=default_password,
+            password_plain=None,
             role='admin',
             status='active',
             tenant_id=tenant.id
@@ -127,7 +127,7 @@ def tenants_reset_admin(tenant_id):
         db.session.add(admin_user)
     else:
         admin_user.password_hash = generate_password_hash(default_password)
-        admin_user.password_plain = default_password
+        admin_user.password_plain = None
         admin_user.status = 'active'
 
     db.session.commit()
@@ -151,19 +151,19 @@ def tenants_reset_missing_passwords(tenant_id):
     users = User.query.filter_by(tenant_id=tenant.id).all()
     updated = 0
     for u in users:
-        if (u.password_plain or '').strip():
+        if (u.password_hash or '').strip():
             continue
         new_pw = default_admin_password if (u.role or '').strip().lower() == 'admin' else default_user_password
         u.password_hash = generate_password_hash(new_pw)
-        u.password_plain = new_pw
+        u.password_plain = None
         updated += 1
 
     db.session.commit()
     audit_log(current_user, tenant.id, 'tenant.reset_missing_passwords', f'updated={updated}')
     if updated:
-        flash(f'Filled missing passwords for {updated} user(s) in {tenant.name}.', 'success')
+        flash(f'Reset missing password hashes for {updated} user(s) in {tenant.name}. Temporary defaults were not stored.', 'success')
     else:
-        flash('All tenant users already have stored passwords.', 'info')
+        flash('All tenant users already have password hashes.', 'info')
     return redirect(url_for('tenants_dashboard'))
 
 

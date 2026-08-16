@@ -64,6 +64,10 @@ def direct_sales_page():
     materials = Material.query.filter_by(is_active=True).order_by(Material.name.asc()).all()
     clients = Client.query.filter_by(is_active=True).order_by(Client.name.asc()).all()
     delivery_persons = DeliveryPerson.query.order_by(DeliveryPerson.name.asc()).all()
+    delivery_person_by_name = {
+        (person.name or '').strip().lower(): person
+        for person in delivery_persons if (person.name or '').strip()
+    }
     # Get GRNs for selection
     grns = GRN.query.filter_by(is_void=False).options(selectinload(GRN.items)).order_by(GRN.date_posted.desc()).limit(100).all()
     # Keep sales categories concise and business-focused.
@@ -120,11 +124,7 @@ def direct_sales_page():
         if rent_row and rent_row.amount is not None:
             fallback_rent = float(rent_row.amount or 0)
         if (s.driver_name or '').strip() or fallback_rent > 0:
-            dp_match = None
-            if (s.driver_name or '').strip():
-                dp_match = DeliveryPerson.query.filter(
-                    func.lower(func.trim(DeliveryPerson.name)) == s.driver_name.strip().lower()
-                ).first()
+            dp_match = delivery_person_by_name.get((s.driver_name or '').strip().lower())
             delivery_allocations_by_sale[s.id] = [{
                 'delivery_person': dp_match,
                 'delivery_person_id': (dp_match.id if dp_match else None),

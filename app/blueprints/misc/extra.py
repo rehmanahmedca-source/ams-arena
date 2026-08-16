@@ -61,7 +61,7 @@ def change_password():
         flash('Password is required', 'danger')
         return redirect(url_for('settings'))
     current_user.password_hash = generate_password_hash(raw_pw)
-    current_user.password_plain = raw_pw
+    current_user.password_plain = None
     db.session.commit()
     flash('Password Updated', 'success')
     return redirect(url_for('settings'))

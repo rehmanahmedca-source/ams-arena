@@ -7,7 +7,7 @@ from datetime import datetime, date, timedelta
 from sqlalchemy import func, case, text, or_, and_, exists, not_
 from types import SimpleNamespace
 from decimal import Decimal, ROUND_HALF_UP
-import os, io, json, re, logging, calendar
+import os, io, json, re, logging, calendar, zipfile
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -241,11 +241,23 @@ def root_backup_settings_history_download(history_id):
     if not fpath or not os.path.exists(fpath):
         flash('Backup ZIP not found on disk.', 'danger')
         return redirect(url_for('root_backup_settings'))
-    ext = _ext_from_name(fpath, 'zip')
+    if os.path.isdir(fpath):
+        # Official backups are private directories. Build the legacy download
+        # in memory so no second persistent ZIP can accumulate.
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+            for root, _, names in os.walk(fpath):
+                for name in sorted(names):
+                    item = os.path.join(root, name)
+                    archive.write(item, os.path.relpath(item, fpath))
+        payload.seek(0)
+        download = payload
+    else:
+        download = fpath
     return send_file(
-        fpath,
+        download,
         as_attachment=True,
-        download_name=_download_filename('ROOTBACKUP', ext),
+        download_name=_download_filename('ROOTBACKUP', 'zip'),
         mimetype='application/zip'
     )
 

@@ -104,7 +104,6 @@
                                 <th>User</th>
                                 <th>Role</th>
                                 <th>Status</th>
-                                {% if current_user.role == 'admin' %}<th>Password</th>{% endif %}
                                 <th>Permissions</th>
                                 <th class="text-end">Actions</th>
                             </tr>
@@ -114,15 +113,7 @@
                             <tr class="border-secondary">
                                 <td class="fw-bold">{{ u.username }}</td>
                                 <td><span class="badge {{ 'bg-warning text-dark' if u.role == 'admin' else 'bg-secondary' }}">{{ u.role }}</span></td>
-                                {% if current_user.role == 'admin' %}
-                                <td>
-                                    {% if u.password_plain %}
-                                        <code class="text-warning">{{ u.password_plain }}</code>
-                                    {% else %}
-                                        <span class="text-white-50">Not available</span>
-                                    {% endif %}
-                                </td>
-                                {% endif %}
+                                <td><span class="badge {{ 'bg-success' if (u.status or 'active')|lower == 'active' else 'bg-danger' }}">{{ u.status or 'active' }}</span></td>
                                 <td>
                                     <div class="d-flex flex-wrap gap-1">
                                         {% if u.can_view_dashboard %}<span class="badge bg-dark border border-secondary text-light">Dashboard</span>{% endif %}

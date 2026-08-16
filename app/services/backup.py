@@ -172,39 +172,23 @@ def _get_or_create_root_backup_settings():
 
 
 def _build_root_backup_zip(settings_row):
-    from blueprints.import_export import _build_full_raw_export_bytes
+    """Compatibility adapter over the authoritative backup service.
 
-    now = pk_now()
-    stamp = now.strftime('%Y%m%d_%H%M%S')
-    scope_ctx = {
-        'scope': 'all_tenants',
-        'target_tenant_id': None,
-        'target_tenant_name': 'All Tenants',
-        'role': 'root',
-    }
+    The ZIP exists only in memory for the legacy download/email UI. The sole
+    persisted copy remains the validated, retention-controlled backup folder.
+    """
+    from app.services.maintenance import create_backup
 
+    result = create_backup(app._get_current_object(), reason='root-backup-ui')
+    backup_dir = result['path']
     zip_io = io.BytesIO()
-    zip_name = f"all_tenants_backup_{stamp}.zip"
+    zip_name = f"{result['name']}.zip"
     with zipfile.ZipFile(zip_io, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-        if bool(getattr(settings_row, 'include_full_raw_xlsx', True)):
-            xlsx_content = _build_full_raw_export_bytes(scope_ctx=scope_ctx)
-            zf.writestr(f"all_tenants_full_raw_{stamp}.xlsx", xlsx_content or b'')
-
-        if bool(getattr(settings_row, 'include_sqlite_db', True)) and os.path.exists(db_path):
-            with open(db_path, 'rb') as dbf:
-                zf.writestr(f"ahmed_cement_{stamp}.db", dbf.read())
-
-        meta = {
-            'generated_at': now.strftime('%Y-%m-%d %H:%M:%S'),
-            'db_source_path': db_path,
-        }
-        zf.writestr('backup_meta.json', json.dumps(meta, ensure_ascii=True, indent=2))
-
-    zip_bytes = zip_io.getvalue()
-    save_path = os.path.join(_root_backup_dir(), zip_name)
-    with open(save_path, 'wb') as f:
-        f.write(zip_bytes)
-    return zip_name, save_path, zip_bytes
+        for root, _, names in os.walk(backup_dir):
+            for name in sorted(names):
+                path = os.path.join(root, name)
+                zf.write(path, os.path.relpath(path, backup_dir))
+    return zip_name, backup_dir, zip_io.getvalue()
 
 
 def _cleanup_root_backup_history(keep_count):
@@ -255,11 +239,11 @@ def _send_hourly_all_tenants_backup_email(trigger_type='auto-hourly', force_send
     zip_bytes = b''
     try:
         zip_name, zip_path, zip_bytes = _build_root_backup_zip(settings_row=settings_row)
-        msg = 'Email delivery removed from this build. Backup saved locally only.'
+        msg = 'Validated backup saved locally. Email delivery is not enabled in this build.'
         _log_root_backup_history(
             settings_row=settings_row,
             trigger_type=trigger_type,
-            status='skipped',
+            status='success',
             recipients=recipients,
             subject=(settings_row.subject_prefix or 'PWARE Root Backup').strip(),
             attachment_name=zip_name,
@@ -267,7 +251,7 @@ def _send_hourly_all_tenants_backup_email(trigger_type='auto-hourly', force_send
             backup_path=zip_path,
             message=msg
         )
-        return False, msg
+        return True, msg
     except Exception as e:
         try:
             _log_root_backup_history(
