@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flask import Flask
 from flask_login import LoginManager
+from sqlalchemy import event
 
 from models import db
 from utils.module_loader import load_modules
@@ -92,6 +93,26 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     _configure_logging(app)
     db.init_app(app)
+
+    # SQLite does not enforce declared foreign keys unless each connection
+    # explicitly enables them. Register this before bootstrap opens the first
+    # connection so future lifecycle regressions fail transactionally instead
+    # of accumulating silent dangling rows.
+    with app.app_context():
+        engine = db.engine
+        if engine.dialect.name == "sqlite" and not getattr(engine, "_ams_fk_listener", False):
+            @event.listens_for(engine, "connect")
+            def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    enabled = cursor.execute("PRAGMA foreign_keys").fetchone()
+                    if not enabled or enabled[0] != 1:
+                        raise RuntimeError("SQLite foreign-key enforcement could not be enabled")
+                finally:
+                    cursor.close()
+
+            engine._ams_fk_listener = True
 
     @app.before_request
     def _sqlite_wal_once():

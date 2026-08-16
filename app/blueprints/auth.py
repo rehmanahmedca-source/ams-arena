@@ -40,6 +40,15 @@ def login():
             if stored_hash:
                 try:
                     if check_password_hash(stored_hash, raw_password):
+                        # A successful hash login no longer needs the legacy
+                        # plaintext fallback. Clear it without logging either
+                        # value; a commit failure must not lock the user out.
+                        if stored_plain:
+                            try:
+                                u.password_plain = None
+                                db.session.commit()
+                            except Exception:
+                                db.session.rollback()
                         return True
                 except Exception:
                     # Some legacy DBs stored plaintext in password_hash; fall back below.

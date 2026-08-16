@@ -57,14 +57,18 @@ def profit_reports():
     purchase_query = db.session.query(GRNItem, GRN).join(GRN, GRNItem.grn_id == GRN.id).filter(
         GRN.is_void == False,
         GRNItem.is_void == False,
-        func.date(GRN.date_posted) <= end_date
     )
     if material_query:
         purchase_query = purchase_query.filter(GRNItem.mat_name.ilike(f'%{material_query}%'))
 
     purchase_index = {}
+    purchase_cost_rows = []
     material_unit_cost_index = {}
-    for item, grn in purchase_query.all():
+    # The legacy cost helper orders purchase rows newest-first.  Retain that
+    # order so the request-local resolver below has identical date/future
+    # fallback semantics without issuing a query for every report line.
+    purchase_rows_for_cost = purchase_query.order_by(GRN.date_posted.desc()).all()
+    for item, grn in purchase_rows_for_cost:
         mat_name = (item.mat_name or '').strip()
         if not mat_name:
             continue
@@ -72,14 +76,45 @@ def profit_reports():
         posted_dt = grn.date_posted or datetime.min
         rate = float(item.price_at_time or 0)
         purchase_index.setdefault(mat_key, []).append((posted_dt, rate))
+        purchase_cost_rows.append((mat_name.casefold(), posted_dt, rate))
 
     for key in purchase_index:
         purchase_index[key].sort(key=lambda x: x[0])
 
-    for m in Material.query.with_entities(Material.name, Material.unit_price).all():
-        mk = _norm_text(m.name)
-        if mk and float(m.unit_price or 0) > 0:
-            material_unit_cost_index[mk] = float(m.unit_price or 0)
+    material_cost_rows = Material.query.with_entities(Material.name, Material.unit_price).all()
+    for name, unit_price in material_cost_rows:
+        mk = _norm_text(name)
+        if mk and float(unit_price or 0) > 0:
+            material_unit_cost_index[mk] = float(unit_price or 0)
+
+    report_cost_cache = {}
+
+    def _report_cost_for_material(material_name, tx_date=None):
+        """Query-free equivalent of sales_core._cost_rate_for_material."""
+        needle = (material_name or '').strip().casefold()
+        date_key = tx_date.isoformat() if hasattr(tx_date, 'isoformat') else str(tx_date or '')
+        cache_key = (needle, date_key)
+        if cache_key in report_cost_cache:
+            return report_cost_cache[cache_key]
+        if not needle:
+            report_cost_cache[cache_key] = (0.0, False)
+            return report_cost_cache[cache_key]
+
+        matching = [row for row in purchase_cost_rows if needle in row[0]]
+        if tx_date:
+            for _name, posted, rate in matching:
+                if posted.date() <= tx_date and rate > 0:
+                    report_cost_cache[cache_key] = (rate, True)
+                    return report_cost_cache[cache_key]
+        if matching and matching[0][2] > 0:
+            report_cost_cache[cache_key] = (matching[0][2], True)
+            return report_cost_cache[cache_key]
+        for name, unit_price in material_cost_rows:
+            if needle in (name or '').casefold() and float(unit_price or 0) > 0:
+                report_cost_cache[cache_key] = (float(unit_price), True)
+                return report_cost_cache[cache_key]
+        report_cost_cache[cache_key] = (0.0, False)
+        return report_cost_cache[cache_key]
 
     grn_id = None
     if grn_id_raw:
@@ -230,7 +265,7 @@ def profit_reports():
         net_revenue = max(0.0, gross_revenue - discount_share)
 
         tx_date = booking.date_posted.date() if booking.date_posted else None
-        cost_rate, cogs_known = _cost_rate_for_material(item.material_name, tx_date)
+        cost_rate, cogs_known = _report_cost_for_material(item.material_name, tx_date)
         cogs = qty * cost_rate
         profit = net_revenue - cogs
 
@@ -273,6 +308,13 @@ def profit_reports():
         )
 
     direct_rows = direct_query.all()
+    # Prime invoice relationships on the identity-mapped sale objects in two
+    # bounded queries; bill-reference helpers below can then remain unchanged.
+    direct_sale_ids = sorted({int(s.id) for _item, s in direct_rows})
+    if direct_sale_ids:
+        DirectSale.query.options(selectinload(DirectSale.invoice)).filter(
+            DirectSale.id.in_(direct_sale_ids)
+        ).all()
     # Build a bulk map for GRN linkage to avoid per-row DB queries.
     try:
         direct_grn_ids = sorted({int(it.grn_item_id) for it, _s in direct_rows if getattr(it, 'grn_item_id', None)})
@@ -295,6 +337,7 @@ def profit_reports():
                 'supplier': (grn.supplier or '').strip(),
                 'grn_is_void': bool(getattr(grn, 'is_void', False)),
                 'grn_item_is_void': bool(getattr(gi, 'is_void', False)),
+                'cost_rate': float(getattr(gi, 'price_at_time', 0) or 0),
             }
 
     sale_gross_map = {}
@@ -332,11 +375,15 @@ def profit_reports():
         net_revenue = max(0.0, gross_revenue - discount_share)
 
         tx_date = sale.date_posted.date() if sale.date_posted else None
-        cost_rate, cogs_known = _frozen_cost_for_sale_item(item)
+        frozen_cost = float(getattr(item, 'cost_rate_at_sale', 0) or 0)
+        cost_rate, cogs_known = (frozen_cost, True) if frozen_cost > 0 else (0.0, False)
+        grn_info = direct_sale_grn_map.get(int(item.grn_item_id)) if getattr(item, 'grn_item_id', None) else None
+        if not cogs_known and grn_info and not grn_info['grn_is_void'] and not grn_info['grn_item_is_void']:
+            grn_cost = float(grn_info.get('cost_rate') or 0)
+            if grn_cost > 0:
+                cost_rate, cogs_known = grn_cost, True
         if not cogs_known:
-            cost_rate, cogs_known = _cost_rate_for_grn_item(item.grn_item_id)
-        if not cogs_known:
-            cost_rate, cogs_known = _cost_rate_for_material(item.product_name, tx_date)
+            cost_rate, cogs_known = _report_cost_for_material(item.product_name, tx_date)
         cogs = qty * cost_rate
         profit = net_revenue - cogs
 
@@ -385,7 +432,68 @@ def profit_reports():
         )
         if resolved_client:
             rent_loss_query = rent_loss_query.filter(DirectSale.client_name.ilike(f'%{resolved_client}%'))
-        for sale in rent_loss_query.all():
+        rent_sales = rent_loss_query.options(
+            selectinload(DirectSale.items),
+            selectinload(DirectSale.invoice),
+        ).all()
+        rent_sale_ids = [sale.id for sale in rent_sales]
+        fallback_rent_by_sale = {}
+        if rent_sale_ids:
+            for rent_row in DeliveryRent.query.filter(
+                DeliveryRent.sale_id.in_(rent_sale_ids),
+                DeliveryRent.is_void == False,
+            ).order_by(DeliveryRent.id.desc()).all():
+                fallback_rent_by_sale.setdefault(rent_row.sale_id, rent_row)
+
+        needs_any_booking_rate = any(
+            float(item.qty or 0) > 0
+            and float(item.price_at_time or 0) <= 0
+            and _is_rent_material_name(item.product_name)
+            for sale in rent_sales for item in (sale.items or [])
+        )
+        rent_client_name_map = {}
+        booking_rate_by_client = {}
+        if needs_any_booking_rate:
+            # Reproduce get_client_by_input's common exact/case-insensitive
+            # resolution in memory, then derive all latest booking rates in a
+            # single joined query rather than three queries per sale.
+            client_rows_for_rent = Client.query.all()
+            by_code = {}
+            by_name = {}
+            by_folded = {}
+            for client_row in client_rows_for_rent:
+                by_code.setdefault((client_row.code or '').strip(), client_row)
+                by_name.setdefault((client_row.name or '').strip(), client_row)
+                by_folded.setdefault((client_row.code or '').strip().casefold(), client_row)
+                by_folded.setdefault((client_row.name or '').strip().casefold(), client_row)
+            for sale in rent_sales:
+                value = (sale.client_code or '').strip() or (sale.client_name or '').strip()
+                resolved = by_code.get(value) or by_name.get(value) or by_folded.get(value.casefold())
+                if not resolved and sale.client_name:
+                    resolved = by_folded.get((sale.client_name or '').strip().casefold())
+                if resolved:
+                    rent_client_name_map[sale.id] = resolved.name
+
+            wanted_client_names = set(rent_client_name_map.values())
+            latest_booking_dates = {}
+            if wanted_client_names:
+                booking_rate_rows = db.session.query(BookingItem, Booking).join(
+                    Booking, BookingItem.booking_id == Booking.id
+                ).filter(
+                    Booking.is_void == False,
+                    Booking.client_name.in_(wanted_client_names),
+                ).all()
+                for booked_item, booked_sale in booking_rate_rows:
+                    material_key = _material_norm_key(booked_item.material_name)
+                    if not material_key:
+                        continue
+                    key = (booked_sale.client_name, material_key)
+                    posted = booked_sale.date_posted
+                    previous = latest_booking_dates.get(key)
+                    if key not in booking_rate_by_client or (posted and (not previous or posted > previous)):
+                        latest_booking_dates[key] = posted
+                        booking_rate_by_client[key] = float(booked_item.price_at_time or 0)
+        for sale in rent_sales:
             sale_items_payload = [
                 {
                     'product_name': it.product_name,
@@ -394,17 +502,45 @@ def profit_reports():
                 }
                 for it in (sale.items or [])
             ]
-            fallback_rent_row = DeliveryRent.query.filter_by(sale_id=sale.id, is_void=False).order_by(DeliveryRent.id.desc()).first()
+            fallback_rent_row = fallback_rent_by_sale.get(sale.id)
             fallback_delivery_cost = float(fallback_rent_row.amount or 0) if fallback_rent_row else 0.0
             effective_delivery_cost = float(getattr(sale, 'delivery_rent_cost', 0) or 0)
             if effective_delivery_cost <= 0:
                 effective_delivery_cost = fallback_delivery_cost
 
-            rent_rec = _rent_reconciliation_from_items(
-                sale_items_payload,
-                delivery_rent_cost=effective_delivery_cost,
-                client_name=sale.client_name
-            )
+            # Most posted rent lines already carry their effective rate.  In
+            # that normal case reconciliation is pure arithmetic; preserve the
+            # legacy booking-rate lookup only for zero-rate rent lines.
+            rent_item_revenue = 0.0
+            needs_booking_rate = False
+            for rent_item in sale_items_payload:
+                if not _is_rent_material_name(rent_item.get('product_name')):
+                    continue
+                qty = float(rent_item.get('qty') or 0)
+                rate = float(rent_item.get('price_at_time') or 0)
+                if qty > 0 and rate > 0:
+                    rent_item_revenue += qty * rate
+                elif qty > 0:
+                    needs_booking_rate = True
+            if needs_booking_rate:
+                rent_item_revenue = 0.0
+                canonical_client_name = rent_client_name_map.get(sale.id)
+                for rent_item in sale_items_payload:
+                    material_name = (rent_item.get('product_name') or '').strip()
+                    if not _is_rent_material_name(material_name):
+                        continue
+                    qty = float(rent_item.get('qty') or 0)
+                    rate = float(rent_item.get('price_at_time') or 0)
+                    if rate <= 0 and canonical_client_name:
+                        rate = float(booking_rate_by_client.get(
+                            (canonical_client_name, _material_norm_key(material_name)), 0
+                        ) or 0)
+                    if qty > 0 and rate > 0:
+                        rent_item_revenue += qty * rate
+            rent_rec = {
+                'rent_item_revenue': rent_item_revenue,
+                'delivery_rent_cost': max(0.0, effective_delivery_cost),
+            }
             rent_revenue = float(getattr(sale, 'rent_item_revenue', 0) or rent_rec['rent_item_revenue'])
             rent_cost = float(getattr(sale, 'delivery_rent_cost', 0) or rent_rec['delivery_rent_cost'])
             variance = rent_revenue - rent_cost

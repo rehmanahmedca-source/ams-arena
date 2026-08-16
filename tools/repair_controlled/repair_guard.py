@@ -41,6 +41,8 @@ def preflight(
     description: str = "",
     *,
     require_confirm: bool = True,
+    db_path: str | os.PathLike | None = None,
+    backup_dir: str | os.PathLike | None = None,
 ) -> str:
     """Run all preflight checks. Returns the path to the backup file taken."""
     script_label = Path(script_name).name
@@ -54,8 +56,10 @@ def preflight(
         )
         sys.exit(1)
 
-    _check_db()
-    backup_path = _take_backup(script_label)
+    target_db = Path(db_path) if db_path is not None else _DB_PATH
+    target_backup_dir = Path(backup_dir) if backup_dir is not None else _BACKUP_DIR
+    _check_db(target_db)
+    backup_path = _take_backup(script_label, target_db, target_backup_dir)
     _log_action(script_label, description, backup_path)
 
     print(f"[AMS RepairGuard] Preflight OK — {script_label}")
@@ -65,30 +69,34 @@ def preflight(
     return backup_path
 
 
-def _check_db() -> None:
-    if not _DB_PATH.exists():
-        print(f"[AMS RepairGuard] ERROR — DB not found: {_DB_PATH}")
+def _check_db(db_path: Path = _DB_PATH) -> None:
+    if not db_path.exists():
+        print(f"[AMS RepairGuard] ERROR — DB not found: {db_path}")
         sys.exit(1)
-    if not os.access(_DB_PATH, os.R_OK | os.W_OK):
-        print(f"[AMS RepairGuard] ERROR — DB not readable/writable: {_DB_PATH}")
+    if not os.access(db_path, os.R_OK | os.W_OK):
+        print(f"[AMS RepairGuard] ERROR — DB not readable/writable: {db_path}")
         sys.exit(1)
 
 
-def _take_backup(script_label: str) -> str:
-    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+def _take_backup(
+    script_label: str,
+    db_path: Path = _DB_PATH,
+    backup_dir: Path = _BACKUP_DIR,
+) -> str:
+    backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_label = script_label.replace(".py", "").replace(" ", "_")
     backup_name = f"pre_repair_{safe_label}_{stamp}.db"
-    dest = _BACKUP_DIR / backup_name
-    shutil.copy2(_DB_PATH, dest)
-    _cleanup_old_backups(keep=20)
+    dest = backup_dir / backup_name
+    shutil.copy2(db_path, dest)
+    _cleanup_old_backups(keep=20, backup_dir=backup_dir)
     return str(dest)
 
 
-def _cleanup_old_backups(keep: int = 20) -> None:
+def _cleanup_old_backups(keep: int = 20, backup_dir: Path = _BACKUP_DIR) -> None:
     try:
         files = sorted(
-            [f for f in _BACKUP_DIR.iterdir() if f.suffix == ".db"],
+            [f for f in backup_dir.iterdir() if f.suffix == ".db"],
             key=lambda f: f.stat().st_mtime,
             reverse=True,
         )

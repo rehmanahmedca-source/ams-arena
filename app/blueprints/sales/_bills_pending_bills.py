@@ -74,3 +74,12 @@ def pending_bills():
                            clients=active_clients,
                            materials=materials)
 
+
+@bp.route('/pending_bills/<int:bill_id>/modals')
+@login_required
+def pending_bill_modals(bill_id):
+    """Render one pending bill's view/edit dialogs on demand."""
+    bill = PendingBill.query.filter(PendingBill.id == bill_id).first_or_404()
+    clients = Client.query.filter(Client.is_active == True).order_by(Client.name.asc()).all()
+    return render_template('_pending_bill_modals.html', bill=bill, clients=clients)
+

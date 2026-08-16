@@ -1,6 +1,10 @@
 """helpers — split from accounts.py."""
 from ._common import *  # noqa
-from app.services.financial_ledgers import build_current_payables, build_supplier_financial_ledger
+from app.services.financial_ledgers import (
+    build_current_payables,
+    build_supplier_financial_ledger,
+    build_supplier_payable_summaries,
+)
 
 
 def _grn_has_active_auto_payment(grn):
@@ -181,9 +185,10 @@ def _client_due_summary():
 def _supplier_payable_summary():
     """Dashboard supplier KPI sourced from the same Supplier Ledger projection."""
     summary = []
-    for supplier in Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all():
-        ledger = build_supplier_financial_ledger(supplier)
-        amount = float(ledger.get('closing_balance') or 0)
+    suppliers = Supplier.query.filter_by(is_active=True).order_by(Supplier.name.asc()).all()
+    balances = build_supplier_payable_summaries(suppliers)
+    for supplier in suppliers:
+        amount = float(balances.get(supplier.id) or 0)
         if amount <= 0:
             continue
         summary.append({

@@ -67,6 +67,31 @@ class BookingAllocation(db.Model):
     booking_item = db.relationship('BookingItem', backref=db.backref('allocations', lazy=True))
 
 
+class BookingAllocationRepairArchive(db.Model):
+    """Immutable evidence retained when a derived booking allocation is removed.
+
+    This intentionally has no foreign keys: its purpose is to preserve the
+    original identifiers and available parent snapshots even when a referenced
+    legacy parent no longer exists.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    original_allocation_id = db.Column(db.Integer, nullable=False, index=True)
+    sale_id = db.Column(db.Integer, nullable=False)
+    sale_item_id = db.Column(db.Integer, nullable=False)
+    booking_item_id = db.Column(db.Integer, nullable=False)
+    qty = db.Column(db.Float, default=0)
+    was_void = db.Column(db.Boolean, default=False)
+    violations = db.Column(db.String(200), nullable=False)
+    repair_reason = db.Column(db.String(500), nullable=False)
+    repair_run_id = db.Column(db.String(64), nullable=False, index=True)
+    source_row_json = db.Column(db.Text, nullable=False)
+    sale_snapshot_json = db.Column(db.Text)
+    sale_item_snapshot_json = db.Column(db.Text)
+    booking_item_snapshot_json = db.Column(db.Text)
+    booking_snapshot_json = db.Column(db.Text)
+    archived_at = db.Column(db.DateTime, default=pk_model_now, nullable=False, index=True)
+
+
 class Payment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     # ``client_name`` is retained as an immutable historical display snapshot;

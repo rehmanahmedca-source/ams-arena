@@ -23,6 +23,8 @@ static/uploads/
 instance/_backup_pre_realdatamigration/
 instance/_migration_check/
 instance/recover_backups/
+instance/reconcile_backups/
+instance/repair_audit.log
 
 # Workspace artifacts
 workspace-*.zip
